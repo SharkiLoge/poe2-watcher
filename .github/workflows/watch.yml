@@ -1,0 +1,67 @@
+name: watch
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # каждые 10 минут (GitHub может задерживать запуск на несколько минут)
+  workflow_dispatch:
+    inputs:
+      digest_now:
+        description: "Отправить дайджест сейчас"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: watcher
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # Состояние живёт в ветке `state` (один коммит, перезаписывается) — main не обрастает тысячами коммитов.
+      - name: Load state
+        run: |
+          if git fetch -q --depth=1 origin state 2>/dev/null; then
+            git show FETCH_HEAD:state.json > state.json
+            echo "state: $(wc -c < state.json) bytes"
+          else
+            echo "state: none yet (first run seeds silently)"
+          fi
+
+      - name: Watch
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          YT_API_KEY: ${{ secrets.YT_API_KEY }}
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
+          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
+        run: python watcher.py ${{ inputs.digest_now && '--digest-now' || '' }}
+
+      - name: Save state
+        if: always() && hashFiles('state.json') != ''
+        run: |
+          cp state.json "$RUNNER_TEMP/state.json"
+          git config user.name "poe2-watcher-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q --orphan state-tmp
+          git rm -rq --cached .
+          cp "$RUNNER_TEMP/state.json" state.json
+          git add -f state.json
+          git commit -qm "state $(date -u +%FT%TZ)"
+          git push -fq origin HEAD:state
+          echo "state saved"

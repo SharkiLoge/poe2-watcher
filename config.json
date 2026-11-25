@@ -1,0 +1,504 @@
+{
+  "_comment": "Пороги и источники сторожа. Меняешь здесь, коммитишь в main — следующий прогон уже с новыми значениями.",
+  "user_agent": "poe2-watcher/1.0 (PoE 2 news monitor)",
+  "thresholds": {
+    "twitch_new_streamer_viewers": 3000,
+    "twitch_new_streamer_followers": 50000,
+    "twitch_new_streamer_followers_min_viewers": 300,
+    "twitch_digest_new_streamer_viewers": 300,
+    "twitch_clip_urgent_views": 50000,
+    "twitch_clip_window_hours": 3,
+    "twitch_clip_digest_views": 5000,
+    "youtube_speed_multiplier": 5,
+    "youtube_speed_min_views": 3000,
+    "youtube_speed_min_age_minutes": 30,
+    "youtube_speed_max_age_hours": 24,
+    "youtube_norm_hours": 6,
+    "youtube_norm_videos": 10,
+    "youtube_norm_bootstrap_fraction": 0.35,
+    "youtube_big_channel_subscribers": 200000,
+    "youtube_digest_external_min_subscribers": 20000,
+    "youtube_search_every_minutes": 30,
+    "youtube_search_window_minutes": 75,
+    "youtube_daily_quota_cap": 6000,
+    "reddit_urgent_upvotes": 3000,
+    "reddit_urgent_window_hours": 3,
+    "reddit_digest_upvotes": 500,
+    "digest_hour_rome": 21,
+    "digest_max_per_section": 15
+  },
+  "keywords": {
+    "ggg_urgent": [
+      "patch notes",
+      "hotfix",
+      "announcement",
+      "trailer",
+      "delay",
+      "delayed",
+      "postpone",
+      "launch",
+      "server",
+      "servers"
+    ],
+    "drama": [
+      "exploit",
+      "exploits",
+      "exploited",
+      "dupe",
+      "duped",
+      "duping",
+      "duplication",
+      "ban",
+      "bans",
+      "banned",
+      "banwave",
+      "ban wave",
+      "rmt",
+      "world first",
+      "world-first",
+      "level 100",
+      "lvl 100",
+      "level-100"
+    ],
+    "poe2_title": [
+      "poe2",
+      "poe 2",
+      "poe ii",
+      "path of exile 2",
+      "path of exile ii",
+      "пое 2",
+      "пое2",
+      "poe²"
+    ]
+  },
+  "ggg": {
+    "news_rss": "https://www.pathofexile.com/news/rss",
+    "forums": [
+      {
+        "name": "PoE 2 патчноуты",
+        "url": "https://www.pathofexile.com/forum/view-forum/2212",
+        "all_urgent": false
+      },
+      {
+        "name": "PoE 2 анонсы",
+        "url": "https://www.pathofexile.com/forum/view-forum/2211",
+        "all_urgent": false
+      }
+    ]
+  },
+  "reddit": {
+    "subreddit": "PathOfExile2",
+    "user_agent": "python:poe2-watcher:1.0 (PoE 2 news monitor for a private Telegram feed)"
+  },
+  "twitch": {
+    "game_name": "Path of Exile 2",
+    "known_streamers": [
+      "madarapoe",
+      "pathofexilebota",
+      "agromorph",
+      "blindermine",
+      "skaiba",
+      "darthmicrotransaction",
+      "zizaran",
+      "palsteron",
+      "helmxbreaker",
+      "ziggyd",
+      "mathil1",
+      "steelmage",
+      "ghazzy",
+      "raizqt",
+      "fubgun",
+      "ruetoo",
+      "pohx",
+      "jungroan",
+      "captainlance9",
+      "alkaizerx",
+      "quin69",
+      "imexile",
+      "tytykiller",
+      "misoxshiru",
+      "deadrabb1t",
+      "lexyu",
+      "empyriangaming",
+      "havoc616",
+      "bunkka_",
+      "poe2inventor",
+      "nezise322",
+      "wunder9797",
+      "omrfilo",
+      "ironq",
+      "schellme",
+      "abysswalkerdlc",
+      "xthefarmerx"
+    ],
+    "stars": [
+      "t2x2",
+      "stalkeros",
+      "aliksunder",
+      "leha_paws",
+      "fispeckt",
+      "guyboss",
+      "leva2k",
+      "mmamontenok",
+      "h0cki",
+      "chubzarik_dota",
+      "tarelko",
+      "deepins02"
+    ]
+  },
+  "youtube": {
+    "search_queries": [
+      {
+        "q": "Path of Exile 2",
+        "lang": "en"
+      },
+      {
+        "q": "Path of Exile 2",
+        "lang": "ru"
+      }
+    ],
+    "channels": [
+      {
+        "name": "Path of Exile (GGG)",
+        "id": "UCA7X5unt1JrIiVReQDUbl_A",
+        "official": true
+      },
+      {
+        "name": "Talkative Tri",
+        "id": "UCJQNiHTCkZl4XC_YwBoZf9Q"
+      },
+      {
+        "name": "Dreamcore",
+        "id": "UC5Ybgf-cfUYMSAbvQtlmoEA"
+      },
+      {
+        "name": "Scorpius",
+        "id": "UCLs6vuZN-z3GMyr6p5vldbA"
+      },
+      {
+        "name": "MisoxShiru",
+        "id": "UCQe-5sJhva7DIeWS1L_SgkQ"
+      },
+      {
+        "name": "Jazzarus",
+        "id": "UCh1bQZwwxR9WGYUh7uellGQ"
+      },
+      {
+        "name": "Prozu",
+        "id": "UC6WzBMnLP2dtx013j7SWFJQ"
+      },
+      {
+        "name": "DEADRABB1T",
+        "id": "UCrjIqMTwQGk6Vw2Tgz7Jb0A"
+      },
+      {
+        "name": "sirgog",
+        "id": "UC1SoHjGhDqK6h980sYsXjhg"
+      },
+      {
+        "name": "Lolcohol",
+        "id": "UCW1ulY8s-PJU8oL4F3eS9tA"
+      },
+      {
+        "name": "Aztecross",
+        "id": "UClbllR4Tx-lhYJyrpu1sA4A"
+      },
+      {
+        "name": "Fervor",
+        "id": "UCPGP4FjMGXigtjnnjJ-1tyg"
+      },
+      {
+        "name": "SamyCaps",
+        "id": "UCVfKtWMTXkR6SSut4WlsGMQ"
+      },
+      {
+        "name": "CHRIX",
+        "id": "UChwBNI1RW0q_sfF758lEo1Q"
+      },
+      {
+        "name": "Diztoh",
+        "id": "UCQA6308TPjGI2RUxFaAY5DQ"
+      },
+      {
+        "name": "Darth Microtransaction",
+        "id": "UCAYJSYhkQOiICxDZkzVMl5w"
+      },
+      {
+        "name": "DarthMicrotransaction TV",
+        "id": "UCn0LYvsnbm-Nk-44neVKfXg"
+      },
+      {
+        "name": "SnooBAE85",
+        "id": "UCfSWYPXd9prVxf5v_DoqtIQ"
+      },
+      {
+        "name": "Zizaran",
+        "id": "UCAG3CiKOUkQysyKCXSFEBPA"
+      },
+      {
+        "name": "ZiggyD Gaming",
+        "id": "UC4mLMb49hqk4y9lVFtfanlg"
+      },
+      {
+        "name": "P4wnyhof",
+        "id": "UCni5pNpPYvejsMn1yWDsMNA"
+      },
+      {
+        "name": "GhazzyTV",
+        "id": "UCoZit1xdwD_46j8sZWRKhoA"
+      },
+      {
+        "name": "Fubgun",
+        "id": "UCPC9EGNDaVOJJyavLfVQpZg"
+      },
+      {
+        "name": "Ruetoo",
+        "id": "UCOFe1_zO8FTztvTX8vfkq4w"
+      },
+      {
+        "name": "Palsteron",
+        "id": "UCXp5YOW329ysRDl_LK9P1_g"
+      },
+      {
+        "name": "Pohx",
+        "id": "UCgv2_w0HveLN_JgFGTqwmTw"
+      },
+      {
+        "name": "jungroan",
+        "id": "UCT6RRo37G6e7GoeZv5pJFBQ"
+      },
+      {
+        "name": "CaptainLance9",
+        "id": "UCJQQq3kLfH-bSE-WSo59XbQ"
+      },
+      {
+        "name": "cArn_",
+        "id": "UCt1W9obs0arKII1GI7W72vQ"
+      },
+      {
+        "name": "AlkaizerSenpai",
+        "id": "UCcCtwWZlbENdsCnF2Nzjivg"
+      },
+      {
+        "name": "Mathilification",
+        "id": "UCnaP100kTBB_WGM9IiF73yw"
+      },
+      {
+        "name": "Spud the King",
+        "id": "UCdZ5rbi12IUSmhE4g84vb2Q"
+      },
+      {
+        "name": "Lexyu",
+        "id": "UCRk88_qsSMcOqSOp-g2USvg"
+      },
+      {
+        "name": "ronarray",
+        "id": "UCShz1l8yLNzrouQKtOLI1qw"
+      },
+      {
+        "name": "Mirror Tier",
+        "id": "UCWdsqkebde59h8_EGinZ5zw"
+      },
+      {
+        "name": "Ky",
+        "id": "UCG6dQa7pUkQY4nsu0951NVQ"
+      },
+      {
+        "name": "Master T",
+        "id": "UCJS4fB_9oUfowpnAPKHC6pQ"
+      },
+      {
+        "name": "piggman",
+        "id": "UCXHB8Q_ZEnNwEgl-5IwuNuQ"
+      },
+      {
+        "name": "PoE Moments",
+        "id": "UCoBQ7hzmEGao_33C06oL0aQ"
+      },
+      {
+        "name": "POEClipZ",
+        "id": "UCyGYBCIwpVZYEqhJzTITTBg"
+      },
+      {
+        "name": "GamerForLife",
+        "id": "UCA9JiZfgmikIpTFKgxfOPtQ"
+      },
+      {
+        "name": "Exiled Again",
+        "id": "UCqFftuISNP9zT2TFkHnDNJg"
+      },
+      {
+        "name": "Path of Exile 2 Clips",
+        "id": "UCODj7R0_V5YbhTk5NH_6WVg"
+      },
+      {
+        "name": "Path of Exile Clips",
+        "id": "UCwmbYB0u-6D2pwdgJJ227Jg"
+      },
+      {
+        "name": "Wraeclast Rewind",
+        "id": "UCojBcUtopP3Z_Ro4k765Sbw"
+      },
+      {
+        "name": "No Context Wraeclast",
+        "id": "UCMwMHIme7ysaEKXgY4SBc7g"
+      },
+      {
+        "name": "ExileRecap",
+        "id": "UCNktsOS2HOn7GvmUuFVIfaQ"
+      },
+      {
+        "name": "Quin69 Highlights",
+        "id": "UCyv3RtRahU41TOQ4ImvbauQ"
+      },
+      {
+        "name": "LeSmall Clips",
+        "id": "UChQ53YC76yDi6tIdcPcts3w"
+      },
+      {
+        "name": "Unstoppablebtw",
+        "id": "UClmpDeolY6mrDqgHUte0lIQ"
+      },
+      {
+        "name": "Kwazi PoE 2",
+        "id": "UC7ZMGavYuO-FMRS9yLPDitw"
+      },
+      {
+        "name": "Qordes",
+        "id": "UCCXEtIRlbRngj0RaP2q8DeQ"
+      },
+      {
+        "name": "Nextezy",
+        "id": "UCNmdBhyaYYtHRfb92xp04-A"
+      },
+      {
+        "name": "mirossick",
+        "id": "UC_Cnik5gg_urY5Ujr-gJA4A"
+      },
+      {
+        "name": "DimL",
+        "id": "UCHyz1TY_Hc3VU7_LaSO0E5w"
+      },
+      {
+        "name": "Auphinity",
+        "id": "UCKR_FlzaMOQyiJjFkQKSyYw"
+      },
+      {
+        "name": "Skladic",
+        "id": "UCZZijKkn4cdmTGbxRdMVwrQ"
+      },
+      {
+        "name": "D1REST",
+        "id": "UCKl-Q83jRItTWByoQcXiSmw"
+      },
+      {
+        "name": "CARDIFF GAMING",
+        "id": "UCrH8Jq8VTKp0JPVd9CQzJvg"
+      },
+      {
+        "name": "POE - Изобретатель",
+        "id": "UCQecsLb0HzeporN_DTWtRqA"
+      },
+      {
+        "name": "Giga Grizzly",
+        "id": "UCeihGlZ57-KRx72si83j4XA"
+      },
+      {
+        "name": "BattleOVER",
+        "id": "UCv2duIe9-OEMJcXyKCUYDWg"
+      },
+      {
+        "name": "KORPNX",
+        "id": "UCWMMhCMlqU0eFMcDJ-8csrQ"
+      },
+      {
+        "name": "SoSeriousGame",
+        "id": "UCaDphxh56u2CE2Wue33hOew"
+      },
+      {
+        "name": "madarapoe",
+        "id": "UCrN63KipBcLWYusMgrC0I1w"
+      },
+      {
+        "name": "Madarapoe Highlights",
+        "id": "UCZhj307EXOYPHGdvRmMRuPg"
+      },
+      {
+        "name": "madarapoe clips",
+        "id": "UCMh-nm9y5Xe0RzKLyRaNUjg"
+      },
+      {
+        "name": "madarochka",
+        "id": "UCCbUA1ZiecGO3BA9f75QHZQ"
+      },
+      {
+        "name": "poe bota",
+        "id": "UCeB8aSt0Ugx3KBy5zHdxrTA"
+      },
+      {
+        "name": "poe bota_лучшее",
+        "id": "UC_8Snc__m__BwwjN6kTUYiQ"
+      },
+      {
+        "name": "Нарезки pathofexilebota",
+        "id": "UCi7TfI5rQufouaBH9fo3h9g"
+      },
+      {
+        "name": "poe bota клипы",
+        "id": "UCGpUA4YlQsgU1XRjdUWk7VQ"
+      },
+      {
+        "name": "AGROMORF",
+        "id": "UCtBY233C8e_RRzAkvjVSs8w"
+      },
+      {
+        "name": "AgroMorph Highlights",
+        "id": "UCgKsCXNjYBbLty0JCDW0TWw"
+      },
+      {
+        "name": "«Шляпа Горностая»",
+        "id": "UCb7EC0Bc0zi7-SWoP28HpfQ"
+      },
+      {
+        "name": "Vurman PoE / Нарезки",
+        "id": "UC1CZlCAmMGyeKd8ej6RznVQ"
+      },
+      {
+        "name": "d9d9jenya",
+        "id": "UCEGJd6EM1Go2KbcXkIQ635w"
+      },
+      {
+        "name": "vrvrarr",
+        "id": "UC_PPAvQm-2LsOgh--b3pSfQ"
+      },
+      {
+        "name": "POE2хавший",
+        "id": "UCH74nKlS_yIVL_dARoI4beg"
+      },
+      {
+        "name": "distortionPoE",
+        "id": "UCudOzlxYTKRsJO8CaTKe9yw"
+      },
+      {
+        "name": "Helm Breaker (maxroll)",
+        "id": "UCLukREdzj4yK54qnXO_DN-A"
+      },
+      {
+        "name": "XTheFarmerX",
+        "id": "UCVSjhEBl3XZZ0i_EtSIUipw"
+      },
+      {
+        "name": "Hegemony",
+        "id": "UCttyLMBX9g6cMub36oSdfbA"
+      },
+      {
+        "name": "POE2guides",
+        "id": "UCAW5egXjEmjgQaC7M7IgI6A"
+      },
+      {
+        "name": "LumdouN (только следить, кадры не брать)",
+        "id": "UCuVDYg7L_Ue3bBpPQnXe7hg"
+      }
+    ]
+  }
+}
