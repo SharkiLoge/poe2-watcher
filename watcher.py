@@ -465,6 +465,39 @@ def youtube_search(run):
 
 
 # ---------------------------------------------------------------- Twitch
+POE_VOD_RE = re.compile(r"(?<![\w])(poe\s?2?|path\s+of\s+exile)(?![\w])", re.IGNORECASE)
+
+
+def twitch_poe_history(run, h, api, uid, gids):
+    """Играл ли канал раньше в PoE / PoE 2.
+    True — есть клипы из PoE/PoE 2 за год или VOD с PoE в названии; False — следов нет;
+    None — проверить не удалось (API не ответил)."""
+    params = {"broadcaster_id": uid, "first": 100,
+              "started_at": iso_z(run.t - dt.timedelta(days=365)), "ended_at": iso_z(run.t)}
+    for _ in range(3):                      # до 300 самых популярных клипов за год
+        try:
+            r = run.http.get(api + "clips", headers=h, params=params, timeout=20)
+        except requests.RequestException:
+            return None
+        if not r.ok:
+            return None
+        js = r.json()
+        if any(c.get("game_id") in gids for c in js.get("data", [])):
+            return True
+        cur = (js.get("pagination") or {}).get("cursor")
+        if not cur:
+            break
+        params["after"] = cur
+    try:
+        r = run.http.get(api + "videos", headers=h, timeout=20,
+                         params={"user_id": uid, "type": "archive", "first": 100})
+    except requests.RequestException:
+        return None
+    if not r.ok:
+        return None
+    return any(POE_VOD_RE.search(v.get("title", "")) for v in r.json().get("data", []))
+
+
 def check_twitch(run):
     cid, secret = os.environ.get("TWITCH_CLIENT_ID"), os.environ.get("TWITCH_CLIENT_SECRET")
     if not (cid and secret):
@@ -489,6 +522,12 @@ def check_twitch(run):
             return
         tw["game_id"] = data[0]["id"]
     gid = tw["game_id"]
+    if not tw.get("poe1_game_id"):
+        r = run.get("twitch", api + "games", headers=h, params={"name": run.cfg["twitch"].get("poe1_game_name", "Path of Exile")})
+        data = (r.json().get("data") if r is not None else None) or []
+        if data:
+            tw["poe1_game_id"] = data[0]["id"]
+    poe_gids = {gid} | ({tw["poe1_game_id"]} if tw.get("poe1_game_id") else set())
     seeding = "history" not in tw and not run.args.no_seed
     hist = tw.setdefault("history", {})     # login -> [первый раз, последний раз, макс. зрителей]
     known = {s.lower() for s in run.cfg["twitch"]["known_streamers"]}
@@ -541,8 +580,17 @@ def check_twitch(run):
         fol_txt = f", {fmt_num(followers)} фолловеров" if followers is not None else ""
         big = (followers or 0) >= th["twitch_new_streamer_followers"]
         min_v = th["twitch_new_streamer_followers_min_viewers"]
+        # «Впервые» = бот его раньше не видел. Для тех, о ком сообщим, проверяем: не играл ли канал
+        # в PoE / PoE 2 до запуска бота (клипы за год, названия VOD). Играл — молчим.
+        unsure = ""
+        if big or viewers >= th["twitch_digest_new_streamer_viewers"]:
+            played = twitch_poe_history(run, h, api, s["user_id"], poe_gids)
+            if played:
+                continue
+            if played is None:
+                unsure = " (историю канала проверить не удалось)"
         if viewers >= th["twitch_new_streamer_viewers"] or (big and viewers >= min_v):
-            run.push("⚡", f"Впервые стримит PoE 2: {s['user_name']} — {fmt_num(viewers)} зрителей{fol_txt}",
+            run.push("⚡", f"Впервые стримит PoE 2: {s['user_name']} — {fmt_num(viewers)} зрителей{fol_txt}{unsure}",
                      "Twitch", f"https://twitch.tv/{login}")
         elif big:
             hist[login] += [run.ts + 12 * 3600, followers]
