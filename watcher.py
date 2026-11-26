@@ -24,10 +24,11 @@ import requests
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 UTC = dt.timezone.utc
-SOURCES = ("ggg", "reddit", "youtube", "twitch")
+SOURCES = ("ggg", "reddit", "youtube", "twitch", "poe2db")
 
 # Сколько дней помнить уже виденное (по источнику дедупа).
-SEEN_TTL_DAYS = {"ggg": 400, "reddit_post": 7, "reddit_urgent": 7, "yt_video": 60,
+SEEN_TTL_DAYS = {"ggg": 400, "ggg_dev": 30, "poe2site": 400, "poe2db": 400,
+                 "reddit_post": 7, "reddit_urgent": 7, "yt_video": 60,
                  "yt_search_en": 10, "yt_search_ru": 10, "twitch_clip": 3, "twitch_star": 3}
 
 SECTION_TITLES = [
@@ -126,12 +127,25 @@ class Run:
         self.kw_ggg = kw_regex(cfg["keywords"]["ggg_urgent"])
         self.kw_drama = kw_regex(cfg["keywords"]["drama"])
         self.kw_poe2 = kw_regex(cfg["keywords"]["poe2_title"])
+        self.kw_poe1 = kw_regex(cfg["keywords"].get("poe1_only", []) or ["path of exile 1"])
 
     # --- дедуп
     def is_seeding(self, source):
         if self.seeding is not None:
             return False
         return source not in self._known_sources
+
+    def mark_undated(self, source, key):
+        """Как mark(), но для источников без дат (poe2db, сайт PoE 2): при --no-seed тоже молча запоминаем —
+        «всё как новое» тут означало бы сотни пушей обо всём, что лежит на сайте годами."""
+        bucket = self.state["seen"].setdefault(source, {})
+        new = key not in bucket
+        bucket[key] = self.ts
+        return new and source in self._known_sources
+
+    def poe1_only(self, text):
+        """Текст явно про PoE 1 и ни слова про PoE 2."""
+        return bool((poe1_marker(text) or self.kw_poe1.search(text)) and not self.kw_poe2.search(text))
 
     def mark(self, source, key):
         """True, если ключ новый и источник не в режиме первичного заполнения."""
@@ -186,35 +200,174 @@ def poe1_marker(title):
     return bool(re.search(r"\b3\.\d{2}\b", title) or re.search(r"path of exile\s*(1\b|:)|\bpoe\s*1\b", title, re.I))
 
 
+def thread_key(url):
+    return re.sub(r"^https?://(www\.)?", "", url).split("#")[0].rstrip("/")
+
+
+def forum_threads(page):
+    """[(url, title, дата первого поста | None)] из списка тем форума pathofexile.com."""
+    out = []
+    for row in page.split('<td class="thread">')[1:]:
+        m = re.search(r'href="(/forum/view-thread/\d+)"[^>]*>\s*([^<]{3,200}?)\s*<', row)
+        if not m:
+            continue
+        pub = None
+        d = re.search(r'class="post_date">\s*,?\s*([A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M)', row)
+        if d:
+            try:
+                pub = dt.datetime.strptime(d.group(1), "%b %d, %Y, %I:%M:%S %p").replace(tzinfo=UTC)
+            except ValueError:
+                pass
+        out.append(("https://www.pathofexile.com" + m.group(1), html.unescape(m.group(2).strip()), pub))
+    return out
+
+
+def ggg_thread_game(run, url, title):
+    """К какой игре относится новость GGG: 'poe2', 'poe1' или None (страницу проверить не удалось).
+    RSS новостей — это форум «Announcements» PoE 1, туда же GGG кладёт общие новости обеих игр."""
+    if run.kw_poe2.search(title):
+        return "poe2"
+    if run.poe1_only(title):
+        return "poe1"
+    r = run.get("ggg", url)
+    if r is None:
+        return None
+    m = re.search(r"<title>([^<]*)", r.text)
+    page_title = html.unescape(m.group(1)) if m else ""
+    if page_title.startswith(("Early Access", "Path of Exile 2")):
+        return "poe2"
+    body = re.sub(r"<[^>]+>", " ", r.text)
+    return "poe2" if run.kw_poe2.search(body) else "poe1"
+
+
 def check_ggg(run):
+    """Все открытые ленты GGG; каждая отдельно, чтобы сбой одной не глушил остальные."""
+    for name, fn in (("ggg", check_ggg_forums), ("ggg_dev", check_ggg_dev), ("poe2site", check_poe2_site)):
+        try:
+            fn(run)
+        except Exception as e:
+            run.error(name, f"{type(e).__name__}: {str(e)[:200]}")
+
+
+def check_ggg_forums(run):
     cfg = run.cfg["ggg"]
-    items = []
+    items = []   # (url, title, источник, дата, все темы срочно, надо ли выяснять игру)
+    for forum in cfg["forums"]:
+        r = run.get("ggg", forum["url"])
+        if r is None:
+            continue
+        threads = forum_threads(r.text)
+        if not threads:
+            run.error("ggg", f"{forum['name']}: темы не найдены — разметка форума поменялась?")
+        for url, title, pub in threads:
+            items.append((url, title, f"форум: {forum['name']}", pub, forum.get("all_urgent", False), False))
     r = run.get("ggg", cfg["news_rss"])
     if r is not None:
         for e in feedparser.parse(r.content).entries:
             pub = None
             if e.get("published_parsed"):
                 pub = dt.datetime(*e.published_parsed[:6], tzinfo=UTC)
-            items.append((e.get("link", ""), e.get("title", "").strip(), "pathofexile.com/news", pub))
-    for forum in cfg["forums"]:
-        r = run.get("ggg", forum["url"])
-        if r is None:
-            continue
-        for path, title in re.findall(r'href="(/forum/view-thread/\d+)"[^>]*>\s*([^<]{3,200}?)\s*<', r.text):
-            items.append(("https://www.pathofexile.com" + path, html.unescape(title.strip()),
-                          f"форум: {forum['name']}", None))
-    for url, title, src, pub in items:
+            items.append((e.get("link", ""), html.unescape(e.get("title", "").strip()), "pathofexile.com/news", pub,
+                          cfg.get("news_poe2_all_urgent", True), True))
+    for url, title, src, pub, all_urgent, classify in items:
         if not url or not title:
             continue
-        key = re.sub(r"^https?://(www\.)?", "", url).rstrip("/")
+        key = thread_key(url)
         if not run.mark("ggg", key):
             continue
-        old = pub is not None and (run.t - pub).days > 3
-        if run.kw_ggg.search(title) and not poe1_marker(title) and not old:
+        game = ggg_thread_game(run, url, title) if classify else "poe2"
+        if game == "poe1":
+            continue                      # только про PoE 1 — не шлём вообще, даже в дайджест
+        old = pub is not None and (run.t - pub).total_seconds() > 3 * 86400
+        if not old and ((all_urgent and game == "poe2") or run.kw_ggg.search(title)):
             run.push("🔥", f"GGG: {title}", src, url)
         else:
-            tag = " (PoE 1)" if poe1_marker(title) else ""
+            tag = " (игра не определена)" if game is None else ""
             run.digest("ggg", key, f"{title}{tag}", url, score=int(pub.timestamp()) if pub else run.ts)
+
+
+def check_ggg_dev(run):
+    """Дев-трекер gggtracker.com (собирает посты сотрудников GGG с форума). Берём только форумы PoE 2:
+    новая тема от GGG — 🔥, ответ сотрудника в теме обсуждений/фидбэка PoE 2 — 💬."""
+    cfg = run.cfg["ggg"].get("dev_tracker")
+    if not cfg:
+        return
+    r = run.get("ggg_dev", cfg["url"])
+    if r is None:
+        return
+    try:
+        acts = r.json().get("activity", [])
+    except ValueError:
+        run.error("ggg_dev", "ответ не JSON")
+        return
+    poe2_ids = set(cfg["poe2_forum_ids"])
+    reply_ids = set(cfg["reply_forum_ids"])
+    replies = {}
+    for a in acts:
+        d = a.get("data") or {}
+        if a.get("type") != "forum_post" or d.get("forum_id") not in poe2_ids:
+            continue
+        if not run.mark("ggg_dev", str(d.get("id"))):
+            continue
+        try:
+            t = dt.datetime.fromisoformat(d["time"]).astimezone(UTC)
+        except (KeyError, ValueError):
+            t = run.t
+        if (run.t - t).total_seconds() > 3 * 86400:
+            continue
+        host = d.get("host") or "www.pathofexile.com"
+        turl = f"https://{host}/forum/view-thread/{d['thread_id']}"
+        title = html.unescape(d.get("thread_title", "")).strip()
+        poster = d.get("poster", "GGG")
+        if d.get("forum_id") not in reply_ids:
+            # Форумы, где темы создаёт сама GGG (анонсы, патчноуты, пресс-релизы): новая тема — новость.
+            # Ответы в них не дублируем — сами темы ловит проверка форумов.
+            if run.mark("ggg", thread_key(turl)):
+                run.push("🔥", f"GGG: {title}", f"дев-трекер · форум: {d.get('forum_name', '')} · {poster}", turl)
+            continue
+        rep = replies.setdefault(turl, {"title": title, "forum": d.get("forum_name", ""), "who": [],
+                                        "url": f"https://{host}/forum/view-post/{d['id']}"})
+        if poster not in rep["who"]:
+            rep["who"].append(poster)
+    for rep in replies.values():
+        run.push("💬", f"GGG ответили в теме «{rep['title']}» — {', '.join(rep['who'])}",
+                 f"дев-трекер · форум: {rep['forum']}", rep["url"])
+
+
+def check_poe2_site(run):
+    """pathofexile2.com — сайт-приложение; его разделы (страницы анонса, классы, лига) лежат в content.json.
+    Новый раздел или блок на сайте = GGG что-то открыли (тизер, раскрытие)."""
+    url = run.cfg["ggg"].get("poe2_site_content")
+    if not url:
+        return
+    r = run.get("poe2site", url)
+    if r is None:
+        return
+    try:
+        data = r.json()
+    except ValueError:
+        run.error("poe2site", "ответ не JSON")
+        return
+    site = "https://pathofexile2.com"
+    found = [(f"block:{c}", f"на сайте включён блок «{c}»", site) for c in data.get("availableContent", [])]
+    la = (data.get("data") or {}).get("league-announcement") or {}
+    slug = la.get("slug")
+    if slug:
+        label = (la.get("label") or {}).get("en_US") or slug
+        found.append((f"page:{slug}", f"страница анонса «{label}»", f"{site}/{slug}"))
+        for s in la.get("subRoutes", []):
+            name = s if isinstance(s, str) else (s.get("path") or s.get("name") or "")
+            if name:
+                found.append((f"page:{slug}/{name}", f"раздел «{name}» на странице «{label}»", f"{site}/{slug}/{name}"))
+    for rt in (data.get("routes") or {}).values():
+        if isinstance(rt, dict) and rt.get("path"):
+            name = (rt.get("title") or {}).get("en_US") or rt["path"]
+            found.append((f"route:{rt['path']}", f"страница «{name}»", f"{site}/{rt['path']}"))
+    if not found:
+        run.error("poe2site", "в content.json нет разделов — формат поменялся?")
+    for key, line, link in found:
+        if run.mark_undated("poe2site", key):
+            run.push("🆕", f"pathofexile2.com: {line}", "сайт PoE 2", link)
 
 
 # ---------------------------------------------------------------- Reddit
@@ -241,8 +394,10 @@ def reddit_posts(run):
                 return None
             for c in r.json()["data"]["children"]:
                 d = c["data"]
+                meta = {"author": d.get("author") or "", "flair": d.get("link_flair_text") or "",
+                        "author_flair": d.get("author_flair_text") or ""}
                 posts.append((feed, d["name"], d["title"], "https://www.reddit.com" + d["permalink"],
-                              dt.datetime.fromtimestamp(d["created_utc"], UTC), d["score"]))
+                              dt.datetime.fromtimestamp(d["created_utc"], UTC), d["score"], meta))
         return posts
     for feed, path in (("new", f"/r/{sub}/new/.rss"), ("top", f"/r/{sub}/top/.rss?t=day")):
         try:
@@ -256,8 +411,22 @@ def reddit_posts(run):
             return None
         for e in feedparser.parse(r.content).entries:
             created = dt.datetime(*e.updated_parsed[:6], tzinfo=UTC) if e.get("updated_parsed") else None
-            posts.append((feed, e.get("id", e.get("link")), e.get("title", ""), e.get("link", ""), created, None))
+            meta = {"author": re.sub(r"^/?u/", "", e.get("author", "")), "flair": "", "author_flair": ""}
+            posts.append((feed, e.get("id", e.get("link")), e.get("title", ""), e.get("link", ""), created, None, meta))
     return posts
+
+
+def reddit_official(run, meta):
+    """Почему пост — новость без порога апвоутов: автор из GGG или флер News/Information/Announcement. Иначе ''."""
+    cfg = run.cfg["reddit"]
+    author = meta.get("author", "")
+    if author.lower() in {a.lower() for a in cfg.get("ggg_authors", [])} \
+            or re.search(r"(^|[-_])GGG($|[-_])", author, re.I) or re.search(r"\bGGG\b", meta.get("author_flair", "")):
+        return f"пост GGG: u/{author}"
+    flair = meta.get("flair", "").strip()
+    if flair and any(f.lower() in flair.lower() for f in cfg.get("news_flairs", [])):
+        return f"флер «{flair}»"
+    return ""
 
 
 def check_reddit(run):
@@ -265,8 +434,13 @@ def check_reddit(run):
     if not posts:
         return
     th = run.th
-    for rank, (feed, pid, title, url, created, score) in enumerate(posts):
+    for rank, (feed, pid, title, url, created, score, meta) in enumerate(posts):
         age_h = (run.t - created).total_seconds() / 3600 if created else None
+        official = reddit_official(run, meta)
+        if official and (age_h is None or age_h <= 48):
+            if run.mark("reddit_urgent", pid):
+                run.push("📣", f"Reddit: {title} ({official})", "r/PathOfExile2", url)
+            continue
         drama = run.kw_drama.search(title)
         hot = False
         if score is not None and age_h is not None and age_h <= 12:
@@ -366,8 +540,12 @@ def check_youtube(run):
             views = int((e.get("media_statistics") or {}).get("views", 0))
             url = f"https://www.youtube.com/watch?v={vid}"
             if run.mark("yt_video", vid):
-                if ch.get("official") and run.kw_ggg.search(title) and age_h < 72:
-                    run.push("🔥", f"GGG на YouTube: {title}", "YouTube Path of Exile", url)
+                if ch.get("official"):
+                    # Официальный канал GGG: любой новый ролик не только про PoE 1 — сразу пуш.
+                    # Решаем по названию: ролики PoE 1 GGG подписывает явно («Path of Exile 1: …», лига PoE 1),
+                    # а доклады ExileCon про обе игры в описании упоминают PoE 1 — их не теряем.
+                    if age_h < 72 and not run.poe1_only(title):
+                        run.push("🔥", f"GGG на YouTube: {title}", "YouTube Path of Exile", url)
                 elif age_h < 48 and re.search(r"path of exile|\bpoe|пое|wraeclast|exile", title + " " + e.get("summary", ""), re.I):
                     run.digest("yt_list", vid, f"{ch['name']}: {title}", url, score=views)
             if age_h <= max_age_h and vid not in videos:
@@ -615,6 +793,103 @@ def check_twitch(run):
                        c["url"], score=views)
 
 
+# ---------------------------------------------------------------- poe2db.tw (датамайн)
+POE2DB_KINDS = {"UniqueItem": ("unique", "уники"), "GemItem": ("gem", "скиллы/геммы")}
+POE2DB_ITEM_CLASS = re.compile(r"\b(UniqueItems?|GemItem|gemitem|whiteitem|\w+Item)\b")
+
+
+def poe2db_links(page):
+    """[(вид, href, название)] предметов на странице poe2db. Классы ссылок разные:
+    'UniqueItem', 'UniqueItems UniqueItem', 'GemItem', 'gemitem', 'whiteitem SoulCore', 'CurrencyItem'…"""
+    out = []
+    for attrs, inner in re.findall(r"<a\b([^>]*)>(.*?)</a>", page, re.S):
+        cls = re.search(r'class="([^"]*)"', attrs)
+        href = re.search(r'href="(?:/us/)?([^"#?/]+)"', attrs)
+        if not (cls and href) or not POE2DB_ITEM_CLASS.search(cls.group(1)):
+            continue
+        name = html.unescape(re.sub(r"<[^>]+>", "", inner)).strip()
+        if not 2 <= len(name) <= 80:
+            continue
+        c = cls.group(1)
+        kind = "unique" if "Unique" in c else "gem" if "gem" in c.lower() else "item"
+        out.append((kind, href.group(1), name))
+    return out
+
+
+def check_poe2db(run):
+    """poe2db.tw — данные из файлов клиента. Не чаще раза в every_minutes (по умолчанию 30 мин):
+    - главная: список версий данных игры (Version_X) и страницы новой лиги (<Лига>_uniques/_gems/_items);
+    - страницы лиги: новые уники, геммы, предметы;
+    - Ascendancy_class: новые классы и восхождения."""
+    cfg = run.cfg.get("poe2db") or {}
+    if not cfg.get("enabled", True):
+        return
+    st = run.state.setdefault("poe2db", {})
+    if run.ts - st.get("last", 0) < cfg.get("every_minutes", 30) * 60 - 90:
+        return
+    st["last"] = run.ts
+    base = cfg.get("base", "https://poe2db.tw/us/")
+    r = run.get("poe2db", base)
+    if r is None:
+        return
+    home = r.text
+    found = []      # (ключ, группа, название, ссылка)
+    versions = sorted(set(re.findall(r'href="(?:/us/)?Version_([0-9][0-9A-Za-z.]*)"', home)))
+    if not versions:
+        run.error("poe2db", "на главной нет списка версий — разметка поменялась?")
+    for v in versions:
+        found.append((f"version:{v}", "version", f"Version {v}", f"{base}Version_{v}"))
+    pages = sorted(set(re.findall(r'href="(?:/us/)?([A-Za-z0-9_\'-]+_(?:uniques|gems|items))"', home)))
+    for p in pages:
+        found.append((f"page:{p}", "page", p.replace("_", " "), base + p))
+        time.sleep(1)
+        r = run.get("poe2db", base + p)
+        if r is None:
+            continue
+        got = poe2db_links(r.text)
+        if not got:
+            run.error("poe2db", f"{p}: предметы не найдены — разметка поменялась?")
+        for kind, href, name in got:
+            found.append((f"{kind}:{href}", f"{kind}|{p}", name, base + href))
+    time.sleep(1)
+    r = run.get("poe2db", base + "Ascendancy_class")
+    if r is not None:
+        asc = re.findall(r'<a class="\w+" data-hover="([^"]*)" href="/us/([^"#?]+)"', r.text)
+        asc = [(h, "ascendancy" if "Ascendancy" in hov else "class") for hov, h in asc
+               if "Ascendancy" in hov or "Characters_hover" in hov]
+        if not asc:
+            run.error("poe2db", "Ascendancy_class: восхождения не найдены — разметка поменялась?")
+        for href, kind in asc:
+            found.append((f"{kind}:{href}", kind, href.replace("_", " "), base + href))
+    new, seen_keys = [], set()
+    for key, group, name, link in found:
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        if run.mark_undated("poe2db", key):
+            new.append((group, name, link))
+    if "poe2db" not in run._known_sources:
+        print(f"[poe2db] первый запуск: молча запомнено {len(seen_keys)} объектов "
+              f"({len(versions)} версий, {len(pages)} страниц лиги, уники/геммы/предметы, классы и восхождения)")
+    groups = {}
+    for group, name, link in new:
+        groups.setdefault(group, []).append((name, link))
+    labels = {"version": "новая версия данных игры", "page": "новая страница лиги", "class": "новый класс",
+              "ascendancy": "новое восхождение"}
+    for group, lst in groups.items():
+        if group in labels:
+            for name, link in lst:
+                if group == "page" and any(g.endswith("|" + link[len(base):]) for g in groups):
+                    continue              # о новой странице лиги скажет пуш с её содержимым
+                run.push("🧬", f"poe2db: {labels[group]} — {name}", "poe2db.tw (датамайн)", link)
+            continue
+        kind, page = group.split("|", 1)
+        what = next((v[1] for v in POE2DB_KINDS.values() if v[0] == kind), "предметы")
+        names = ", ".join(n for n, _ in lst[:12]) + (f" и ещё {len(lst) - 12}" if len(lst) > 12 else "")
+        link = lst[0][1] if len(lst) == 1 else base + page
+        run.push("🧬", f"poe2db: новые {what} ({len(lst)}) — {names}", f"poe2db.tw · {page.replace('_', ' ')}", link)
+
+
 # ---------------------------------------------------------------- Telegram
 def tg_send(run, text, preview=True):
     if run.dry:
@@ -723,7 +998,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="ничего не отправлять, печатать сообщения")
     ap.add_argument("--no-seed", action="store_true", help="не заполнять state молча: всё найденное считать новым")
     ap.add_argument("--digest-now", action="store_true", help="собрать дайджест сейчас, не дожидаясь 21:00")
-    ap.add_argument("--test-message", action="store_true", help="отправить тестовое сообщение и выйти")
+    ap.add_argument("--test-message", nargs="?", const="Divine News Radar на связи ✅", default=None, metavar="ТЕКСТ",
+                    help="отправить тестовое сообщение (можно свой текст) и выйти")
     ap.add_argument("--only", default=",".join(SOURCES), help="источники через запятую: " + ",".join(SOURCES))
     ap.add_argument("--state", default=None, help="путь к state.json (по умолчанию рядом со скриптом)")
     args = ap.parse_args()
@@ -739,12 +1015,13 @@ def main():
     run = Run(cfg, state, args)
 
     if args.test_message:
-        ok = tg_send(run, "Divine News Radar подключён ✅")
+        ok = tg_send(run, esc(args.test_message))
         print("отправлено" if ok else "НЕ отправлено")
         sys.exit(0 if ok else 1)
 
     only = {s.strip() for s in args.only.split(",")}
-    for name, fn in (("ggg", check_ggg), ("reddit", check_reddit), ("youtube", check_youtube), ("twitch", check_twitch)):
+    for name, fn in (("ggg", check_ggg), ("reddit", check_reddit), ("youtube", check_youtube), ("twitch", check_twitch),
+                     ("poe2db", check_poe2db)):
         if name not in only:
             continue
         t0 = time.time()

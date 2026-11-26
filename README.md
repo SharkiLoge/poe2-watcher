@@ -7,9 +7,13 @@
 
 | Источник | Как | Срочно 🔥 | В дайджест 📌 |
 |---|---|---|---|
-| GGG | RSS новостей + форумы «Patch Notes» и «Announcements» PoE 2 | заголовок со словами patch notes, hotfix, announcement, trailer, delay, launch, server (не PoE 1) | всё остальное от GGG |
-| Reddit r/PathOfExile2 | RSS `/new` и `/top?t=day` (или API, если заданы `REDDIT_CLIENT_*`) | пост в топе дня со словами exploit, dupe, ban, RMT, world first, level 100; с API — ещё ≥ 3000 апвоутов за 3 ч | топ дня |
-| YouTube | RSS всех каналов из `config.json` (бесплатно), просмотры — `videos.list`, поиск `search.list` раз в 30 мин (en и ru по очереди) | ролик по PoE 2 в 5× быстрее нормы канала; канал ≥ 200K подписчиков не из списка впервые про PoE 2; новое видео GGG со словом trailer и т. п. | новые ролики каналов из списка, ролики каналов не из списка ≥ 20K |
+| GGG — форумы PoE 2 | «Early Access Patch Notes» (2212), «Early Access Announcements» (2211), «Path of Exile 2 Press Releases» | **любая новая тема** (`all_urgent: true`) | темы старше 3 дней |
+| GGG — RSS новостей | `pathofexile.com/news/rss` (это форум «Announcements» PoE 1, туда же идут общие новости). Игру определяем по заголовку, иначе по странице темы | любой пост про PoE 2 (`news_poe2_all_urgent`) | — ; посты **только про PoE 1** (Covens of Umbra и т. п.) не шлются вообще |
+| GGG — дев-трекер | [gggtracker.com](https://gggtracker.com) `activity.json` — посты сотрудников GGG с форума; берём только форумы PoE 2 (`ggg.dev_tracker`), без баг-репортов и торговли | новая тема GGG 🔥 (часто раньше, чем страница форума); 💬 ответ сотрудника GGG в теме фидбэка/обсуждений/билдов PoE 2 | — |
+| GGG — сайт pathofexile2.com | `internal-api/content.json` — разделы сайта (страница анонса, классы, лига, блоки) | 🆕 новый раздел или блок на сайте (тизер, раскрытие) | — |
+| poe2db.tw (датамайн) | раз в 30 мин (`poe2db.every_minutes`): главная — версии данных игры и страницы новой лиги (`<Лига>_uniques/_gems/_items`), эти страницы, `Ascendancy_class` | 🧬 новая версия данных; новые уники / геммы / предметы лиги (одним пушем со списком); новый класс или восхождение | при отказе сайта — строка в «сбоях» дайджеста |
+| Reddit r/PathOfExile2 | RSS `/new` и `/top?t=day` (или API, если заданы `REDDIT_CLIENT_*`) | 📣 пост сотрудника GGG (автор `*_GGG`, `GGG-*`, `reddit.ggg_authors`) или с флером News / Information / Announcement — без порога апвоутов (флер виден только через API); пост в топе дня со словами exploit, dupe, ban, RMT, world first, level 100; с API — ещё ≥ 3000 апвоутов за 3 ч | топ дня |
+| YouTube | RSS всех каналов из `config.json` (бесплатно), просмотры — `videos.list`, поиск `search.list` раз в 30 мин (en и ru по очереди) | ролик по PoE 2 в 5× быстрее нормы канала; канал ≥ 200K подписчиков не из списка впервые про PoE 2; **любой новый ролик официального канала GGG**, кроме подписанных как PoE 1 | новые ролики каналов из списка, ролики каналов не из списка ≥ 20K |
 | Twitch | Helix: топ-100 трансляций категории, клипы за 3 ч, фолловеры | канал не из базы впервые в PoE 2 с ≥ 3000 зрителей или ≥ 50K фолловеров и ≥ 300 зрителей (зашёл с меньшим — ждём до 12 ч, пока наберёт); любой из «звёзд»; клип ≥ 50K просмотров за 3 ч | новые стримеры ≥ 300 зрителей, клипы ≥ 5K |
 
 Дайджест уходит одним сообщением в 21:00 по Риму (летнее/зимнее время учитывается само).
@@ -19,6 +23,9 @@
 берётся заготовка: 35 % медианы просмотров роликов старше 3 дней (`youtube_norm_bootstrap_fraction`).
 
 **Первый запуск** (и любой новый источник) молча запоминает всё, что уже есть, — пушей о старом не будет.
+У источников без дат (poe2db, сайт PoE 2) так же и при `--no-seed`: иначе «всё как новое» — сотни пушей о том, что лежит на сайте давно.
+
+**Не проверяется:** X/Twitter GGG — бесплатного API нет. Мелкие YouTube-каналы с пересказами не добавляем.
 
 ## Как поменять пороги
 `config.json` → раздел `thresholds` (имена говорят сами за себя), правка прямо на GitHub → Commit.
@@ -28,7 +35,10 @@
 - **YouTube-канал:** `config.json` → `youtube.channels` → `{"name": "Имя", "id": "UC…"}`.
 - **Twitch-стример PoE (чтобы не считался «новым»):** `twitch.known_streamers`, ник маленькими буквами.
 - **Звезда (пуш, как только зайдёт в PoE 2):** `twitch.stars`.
-- **Форум GGG:** `ggg.forums` → `{"name": "…", "url": "https://www.pathofexile.com/forum/view-forum/<id>"}`.
+- **Форум GGG:** `ggg.forums` → `{"name": "…", "url": "https://www.pathofexile.com/forum/view-forum/<id>", "all_urgent": true}`
+  (`all_urgent: false` — срочно только темы со словами из `keywords.ggg_urgent`).
+- **Форум PoE 2 в дев-трекер:** id форума в `ggg.dev_tracker.poe2_forum_ids` (и в `reply_forum_ids`, если нужны ответы GGG в чужих темах).
+- **Лига PoE 1, которую не надо слать:** `keywords.poe1_only`.
 - Новый тип источника — функция `check_<имя>(run)` в `watcher.py` и строка в `main()`.
 
 ## Как остановить
@@ -50,7 +60,7 @@ GitHub → репозиторий → **Actions** → workflow **watch** → «�
 pip install -r requirements.txt
 python watcher.py --dry-run                       # ничего не шлёт, state не пишет
 python watcher.py --dry-run --no-seed --digest-now  # пример: всё найденное как новое + дайджест
-python watcher.py --test-message                  # тестовое сообщение в Telegram
+python watcher.py --test-message                  # тестовое сообщение в Telegram (можно свой текст: --test-message "…")
 python tg_setup.py                                # найти chat_id после /start боту
 ```
 Ключи локально — в `.env` (в `.gitignore`).

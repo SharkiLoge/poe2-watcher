@@ -38,7 +38,26 @@
       "postpone",
       "launch",
       "server",
-      "servers"
+      "servers",
+      "reveal",
+      "revealed",
+      "ascendancy",
+      "class",
+      "unique",
+      "uniques",
+      "teaser",
+      "preview",
+      "league",
+      "balance",
+      "manifesto",
+      "q&a",
+      "interview"
+    ],
+    "poe1_only": [
+      "path of exile 1",
+      "poe 1",
+      "poe1",
+      "covens of umbra"
     ],
     "drama": [
       "exploit",
@@ -73,22 +92,63 @@
   },
   "ggg": {
     "news_rss": "https://www.pathofexile.com/news/rss",
+    "news_poe2_all_urgent": true,
     "forums": [
       {
         "name": "PoE 2 патчноуты",
         "url": "https://www.pathofexile.com/forum/view-forum/2212",
-        "all_urgent": false
+        "all_urgent": true
       },
       {
         "name": "PoE 2 анонсы",
         "url": "https://www.pathofexile.com/forum/view-forum/2211",
-        "all_urgent": false
+        "all_urgent": true
+      },
+      {
+        "name": "PoE 2 пресс-релизы",
+        "url": "https://www.pathofexile.com/forum/view-forum/poe2-press",
+        "all_urgent": true
       }
-    ]
+    ],
+    "dev_tracker": {
+      "_comment": "gggtracker.com — посты сотрудников GGG с форума. poe2_forum_ids: форумы PoE 2 (без баг-репортов и торговли); reply_forum_ids: где ответ GGG в чужой теме — тоже пуш 💬.",
+      "url": "https://gggtracker.com/activity.json",
+      "poe2_forum_ids": [
+        2211,
+        2212,
+        2213,
+        2216,
+        2217,
+        2218,
+        2391
+      ],
+      "reply_forum_ids": [
+        2213,
+        2216,
+        2217,
+        2218
+      ]
+    },
+    "poe2_site_content": "https://pathofexile2.com/internal-api/content.json"
+  },
+  "poe2db": {
+    "enabled": true,
+    "base": "https://poe2db.tw/us/",
+    "every_minutes": 30
   },
   "reddit": {
     "subreddit": "PathOfExile2",
-    "user_agent": "python:poe2-watcher:1.0 (PoE 2 news monitor for a private Telegram feed)"
+    "user_agent": "python:poe2-watcher:1.0 (PoE 2 news monitor for a private Telegram feed)",
+    "ggg_authors": [
+      "GGG-Bree",
+      "Bex_GGG"
+    ],
+    "news_flairs": [
+      "News",
+      "Information",
+      "Announcement",
+      "GGG"
+    ]
   },
   "twitch": {
     "game_name": "Path of Exile 2",
