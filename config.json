@@ -563,5 +563,107 @@
         "id": "UCuVDYg7L_Ue3bBpPQnXe7hg"
       }
     ]
+  },
+  "clips": {
+    "_comment": "Модуль «🔥 Клип» (clips.py). Пороги только этого модуля; пороги выше (thresholds) он не трогает.",
+    "twitch_max_age_hours": 6,
+    "twitch_views": 1500,
+    "twitch_views_per_hour": 500,
+    "twitch_rate_min_age_minutes": 30,
+    "twitch_watchlist_size": 50,
+    "twitch_watch_first_hours": 1,
+    "twitch_watch_first_hour_views": 200,
+    "twitch_small_streamer_views": 300,
+    "twitch_pages": 3,
+    "youtube_every_minutes": 15,
+    "youtube_max_age_hours": 24,
+    "youtube_min_age_minutes": 30,
+    "youtube_fast_hours": 6,
+    "youtube_fast_views": 20000,
+    "youtube_rate_multiplier": 3,
+    "youtube_min_views": 2000,
+    "youtube_bootstrap_first_day_share": 0.5,
+    "rocket_speed_multiplier": 3,
+    "event_min_clips": 3,
+    "youtube_channels": [
+      {
+        "name": "Path of Exile (GGG)",
+        "id": "UCA7X5unt1JrIiVReQDUbl_A"
+      },
+      {
+        "name": "POEClipZ",
+        "id": "UCyGYBCIwpVZYEqhJzTITTBg"
+      },
+      {
+        "name": "ExileRecap",
+        "id": "UCNktsOS2HOn7GvmUuFVIfaQ"
+      },
+      {
+        "name": "Exiled Again",
+        "id": "UCqFftuISNP9zT2TFkHnDNJg"
+      },
+      {
+        "name": "PoeEnhancer",
+        "id": "UC1lYyGJ84cfichYCVkkdfVw"
+      },
+      {
+        "name": "Asmongold Clips",
+        "id": "UCMwJJL5FJFuTRT55ksbQ4GQ",
+        "poe_only": true
+      },
+      {
+        "name": "madarapoe clips",
+        "id": "UCMh-nm9y5Xe0RzKLyRaNUjg"
+      },
+      {
+        "name": "madarapoe",
+        "id": "UCrN63KipBcLWYusMgrC0I1w"
+      },
+      {
+        "name": "poe bota_лучшее",
+        "id": "UC_8Snc__m__BwwjN6kTUYiQ"
+      },
+      {
+        "name": "Нарезки pathofexilebota",
+        "id": "UCi7TfI5rQufouaBH9fo3h9g"
+      },
+      {
+        "name": "poe bota",
+        "id": "UCeB8aSt0Ugx3KBy5zHdxrTA"
+      },
+      {
+        "name": "AgroMorph Highlights",
+        "id": "UCgKsCXNjYBbLty0JCDW0TWw"
+      },
+      {
+        "name": "Vurman PoE / Нарезки",
+        "id": "UC1CZlCAmMGyeKd8ej6RznVQ"
+      },
+      {
+        "name": "DarthMicrotransaction TV",
+        "id": "UCn0LYvsnbm-Nk-44neVKfXg"
+      },
+      {
+        "name": "GhazzyTV",
+        "id": "UCoZit1xdwD_46j8sZWRKhoA",
+        "poe_only": true
+      },
+      {
+        "name": "Zizaran",
+        "id": "UCAG3CiKOUkQysyKCXSFEBPA"
+      },
+      {
+        "name": "Fubgun",
+        "id": "UCPC9EGNDaVOJJyavLfVQpZg"
+      },
+      {
+        "name": "Mathilification",
+        "id": "UCnaP100kTBB_WGM9IiF73yw"
+      },
+      {
+        "name": "Ruetoo",
+        "id": "UCOFe1_zO8FTztvTX8vfkq4w"
+      }
+    ]
   }
 }

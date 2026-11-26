@@ -1,17 +1,23 @@
 name: watch
 
+# Cron GitHub для этого репозитория срабатывал раз в несколько часов (26.11: 2 запуска за сутки вместо 144),
+# поэтому бот работает «вахтами»: одна задача гоняет watcher.py каждые 10 минут ~5 ч 45 мин,
+# перед каждым прогоном берёт свежий main (правки config.json подхватываются без перезапуска),
+# после каждого прогона сохраняет state, а в конце сама запускает следующую вахту.
+# Cron ниже — только запасной перезапуск, если цепочка оборвётся.
 on:
   schedule:
-    - cron: "*/10 * * * *"   # каждые 10 минут (GitHub может задерживать запуск на несколько минут)
+    - cron: "17 * * * *"
   workflow_dispatch:
     inputs:
       digest_now:
-        description: "Отправить дайджест сейчас"
+        description: "Отправить дайджест сейчас (в первом прогоне вахты)"
         type: boolean
         default: false
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: watcher
@@ -20,7 +26,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
 
@@ -41,7 +47,7 @@ jobs:
             echo "state: none yet (first run seeds silently)"
           fi
 
-      - name: Watch
+      - name: Watch (every 10 min, ~5h45m)
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
@@ -50,18 +56,41 @@ jobs:
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
           REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
           REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
-        run: python watcher.py ${{ inputs.digest_now && '--digest-now' || '' }}
-
-      - name: Save state
-        if: always() && hashFiles('state.json') != ''
+          GH_TOKEN: ${{ github.token }}
+          DIGEST_NOW: ${{ inputs.digest_now && '--digest-now' || '' }}
         run: |
-          cp state.json "$RUNNER_TEMP/state.json"
-          git config user.name "poe2-watcher-bot"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -q --orphan state-tmp
-          git rm -rq --cached .
-          cp "$RUNNER_TEMP/state.json" state.json
-          git add -f state.json
-          git commit -qm "state $(date -u +%FT%TZ)"
-          git push -fq origin HEAD:state
-          echo "state saved"
+          save_state() {
+            [ -f state.json ] || return 0
+            tmp=$(mktemp -d)
+            cp state.json "$tmp/state.json"
+            (
+              cd "$tmp"
+              git init -q
+              git add state.json
+              git -c user.name="poe2-watcher-bot" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+                commit -qm "state $(date -u +%FT%TZ)"
+              git push -fq "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:state
+            ) && echo "state saved" || echo "::warning::state not saved"
+            rm -rf "$tmp"
+          }
+          end=$((SECONDS + 345 * 60 - 12 * 60))
+          extra="$DIGEST_NOW"
+          while :; do
+            t0=$SECONDS
+            # свежий код и config из main; state.json не в git — не трогается
+            git fetch -q origin main && git reset -q --hard FETCH_HEAD || echo "::warning::fetch main failed"
+            pip install -q -r requirements.txt || true
+            python watcher.py $extra || echo "::warning::watcher.py exit $?"
+            extra=""
+            save_state
+            [ $((SECONDS + 600)) -lt $end ] || break
+            sleep $(( 600 - (SECONDS - t0) > 30 ? 600 - (SECONDS - t0) : 30 ))
+          done
+
+      # Не при ручной отмене (Cancel в Actions = остановить бота; запасной cron поднимет его в течение часа,
+      # чтобы остановить совсем — Disable workflow).
+      - name: Next shift
+        if: success() || failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run watch.yml --ref main -R "$GITHUB_REPOSITORY" && echo "next shift queued"

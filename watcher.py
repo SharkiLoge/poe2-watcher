@@ -1030,6 +1030,15 @@ def main():
         except Exception as e:  # один упавший источник не должен ронять остальные
             run.error(name, f"{type(e).__name__}: {str(e)[:200]}")
         print(f"[ok] {name}: {time.time() - t0:.1f} с")
+    # Модуль «🔥 Клип» (clips.py) — после остальных источников, чтобы не дублировать их пуши про тот же клип.
+    if only >= set(SOURCES) or "clips" in only:
+        import clips
+        t0 = time.time()
+        try:
+            clips.check_clips(run)
+        except Exception as e:
+            run.error("clips", f"{type(e).__name__}: {str(e)[:200]}")
+        print(f"[ok] clips: {time.time() - t0:.1f} с")
     flush_urgent(run)
     maybe_digest(run)
     prune(run)
