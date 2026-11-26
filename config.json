@@ -93,6 +93,7 @@
   "ggg": {
     "news_rss": "https://www.pathofexile.com/news/rss",
     "news_poe2_all_urgent": true,
+    "digest_max_age_hours": 36,
     "forums": [
       {
         "name": "PoE 2 патчноуты",
@@ -134,6 +135,12 @@
   "poe2db": {
     "enabled": true,
     "base": "https://poe2db.tw/us/",
+    "every_minutes": 30
+  },
+  "vaal_tools": {
+    "_comment": "Фан-сайт vaal.tools (не GGG): всё раскрытое к 1.0 по категориям. Новое — пуш 🧩 на категорию, новая подстраница /release-1-0/… — отдельный пуш.",
+    "enabled": true,
+    "url": "https://vaal.tools/release-1-0/",
     "every_minutes": 30
   },
   "reddit": {

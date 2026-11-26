@@ -24,10 +24,10 @@ import requests
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 UTC = dt.timezone.utc
-SOURCES = ("ggg", "reddit", "youtube", "twitch", "poe2db")
+SOURCES = ("ggg", "reddit", "youtube", "twitch", "poe2db", "vaal")
 
 # Сколько дней помнить уже виденное (по источнику дедупа).
-SEEN_TTL_DAYS = {"ggg": 400, "ggg_dev": 30, "poe2site": 400, "poe2db": 400,
+SEEN_TTL_DAYS = {"ggg": 400, "ggg_dev": 30, "poe2site": 400, "poe2db": 400, "vaal_tools": 400,
                  "reddit_post": 7, "reddit_urgent": 7, "yt_video": 60,
                  "yt_search_en": 10, "yt_search_ru": 10, "twitch_clip": 3, "twitch_star": 3}
 
@@ -162,9 +162,14 @@ class Run:
         text = f"{emoji} {esc(line)}\n<i>{esc(source)}</i> · {esc(url)}"
         self.urgent.append(text)
 
-    def digest(self, section, key, line, url, score=0):
+    def drop(self, rule, text):
+        """Запомнить отсеянное фильтром — в конце прогона печатается сводка (лог Actions / dry-run)."""
+        self.__dict__.setdefault("dropped", {}).setdefault(rule, []).append(text)
+
+    def digest(self, section, key, line, url, score=0, **extra):
+        """extra — поля для фильтров build_digest (title, cid, desc у YouTube)."""
         d = self.state["digest"]
-        d[f"{section}|{key}"] = {"sec": section, "text": line, "url": url, "score": score, "ts": self.ts}
+        d[f"{section}|{key}"] = {"sec": section, "text": line, "url": url, "score": score, "ts": self.ts, **extra}
 
     def error(self, source, msg):
         print(f"[warn] {source}: {msg}")
@@ -249,6 +254,11 @@ def check_ggg(run):
             run.error(name, f"{type(e).__name__}: {str(e)[:200]}")
 
 
+def ggg_max_age_h(run):
+    """Темы GGG старше этого (по дате темы) — ни пуша, ни дайджеста. config.json → ggg.digest_max_age_hours."""
+    return run.cfg["ggg"].get("digest_max_age_hours", 36)
+
+
 def check_ggg_forums(run):
     cfg = run.cfg["ggg"]
     items = []   # (url, title, источник, дата, все темы срочно, надо ли выяснять игру)
@@ -278,8 +288,10 @@ def check_ggg_forums(run):
         game = ggg_thread_game(run, url, title) if classify else "poe2"
         if game == "poe1":
             continue                      # только про PoE 1 — не шлём вообще, даже в дайджест
-        old = pub is not None and (run.t - pub).total_seconds() > 3 * 86400
-        if not old and ((all_urgent and game == "poe2") or run.kw_ggg.search(title)):
+        if pub is not None and (run.t - pub).total_seconds() > ggg_max_age_h(run) * 3600:
+            run.drop("GGG старше 36 ч", f"{title} ({pub:%d.%m.%Y})")
+            continue                      # старая тема (анонсы прошлых месяцев) — только запомнили, никуда не шлём
+        if (all_urgent and game == "poe2") or run.kw_ggg.search(title):
             run.push("🔥", f"GGG: {title}", src, url)
         else:
             tag = " (игра не определена)" if game is None else ""
@@ -492,6 +504,21 @@ def fetch_channel_feed(run, ch):
     return ch, feedparser.parse(r.content).entries, None
 
 
+def en_ru_title(title):
+    """Все буквы названия — латиница ASCII или кириллица (тайский, корейский, китайский, латиница с диакритикой — нет)."""
+    return all(ch.isascii() or "Ѐ" <= ch <= "ӿ" for ch in title if ch.isalpha())
+
+
+def yt_list_ok(run, title, desc, share):
+    """Ролик канала из списка — в дайджест: не PoE 1 и по названию/описанию/каналу про PoE 2."""
+    return not run.poe1_only(title) and is_poe2_video(run, title, desc, share)
+
+
+def yt_ext_ok(run, title):
+    """Ролик канала не из списка (поиск) — в дайджест и 📺: не PoE 1, название на английском или русском."""
+    return not run.poe1_only(title) and en_ru_title(title)
+
+
 def is_poe2_video(run, title, desc, channel_poe2_share):
     text = f"{title}\n{desc or ''}"
     if run.kw_poe2.search(text) or re.search(r"\b0\.\d\.\d+[a-z]?\b", title):
@@ -518,6 +545,7 @@ def check_youtube(run):
             continue
         cid = ch["id"]
         share = sum(1 for e in entries if run.kw_poe2.search(e.get("title", "") + " " + e.get("summary", ""))) / len(entries)
+        yt.setdefault("share", {})[cid] = round(share, 2)   # для фильтра уже накопленного в дайджесте
         # Норма-заготовка, пока не накопились реальные замеры за 6 ч: доля от медианы просмотров роликов старше 3 дней.
         b = boot.get(cid)
         if not b or run.ts - b.get("ts", 0) > 7 * 86400:
@@ -547,7 +575,10 @@ def check_youtube(run):
                     if age_h < 72 and not run.poe1_only(title):
                         run.push("🔥", f"GGG на YouTube: {title}", "YouTube Path of Exile", url)
                 elif age_h < 48 and re.search(r"path of exile|\bpoe|пое|wraeclast|exile", title + " " + e.get("summary", ""), re.I):
-                    run.digest("yt_list", vid, f"{ch['name']}: {title}", url, score=views)
+                    if yt_list_ok(run, title, e.get("summary"), share):
+                        run.digest("yt_list", vid, f"{ch['name']}: {title}", url, score=views, title=title, cid=cid, ok=1)
+                    else:
+                        run.drop("YouTube из списка: PoE 1 / не про PoE 2", f"{ch['name']}: {title}")
             if age_h <= max_age_h and vid not in videos:
                 videos[vid] = {"c": cid, "n": ch["name"], "t": title, "p": int(pub.timestamp()), "v": views,
                                "poe2": is_poe2_video(run, title, e.get("summary"), share), "a": 0, "s": 0}
@@ -615,6 +646,9 @@ def youtube_search(run):
             continue
         if not re.search(r"path of exile|\bpoe\b|poe2|пое", sn.get("title", "") + " " + sn.get("description", ""), re.I):
             continue
+        if not yt_ext_ok(run, html.unescape(sn.get("title", ""))):
+            run.drop("YouTube не из списка: PoE 1 / не en-ru", html.unescape(sn.get("channelTitle", "") + ": " + sn.get("title", "")))
+            continue                      # PoE 1 или название не на английском/русском — ни 📺, ни дайджест
         hits.append((vid, sn))
     need = sorted({sn["channelId"] for _, sn in hits
                    if sn["channelId"] not in ext or run.ts - ext[sn["channelId"]]["ts"] > 14 * 86400})
@@ -639,7 +673,7 @@ def youtube_search(run):
             run.push("📺", f"Крупный канал впервые про PoE 2: {name} ({fmt_num(subs)} подписчиков) — «{title}»",
                      "YouTube", url)
         elif subs >= th["youtube_digest_external_min_subscribers"]:
-            run.digest("yt_ext", vid, f"{name} ({fmt_num(subs)} подп.): {title}", url, score=subs)
+            run.digest("yt_ext", vid, f"{name} ({fmt_num(subs)} подп.): {title}", url, score=subs, title=title, ok=1)
 
 
 # ---------------------------------------------------------------- Twitch
@@ -890,6 +924,77 @@ def check_poe2db(run):
         run.push("🧬", f"poe2db: новые {what} ({len(lst)}) — {names}", f"poe2db.tw · {page.replace('_', ' ')}", link)
 
 
+# ---------------------------------------------------------------- vaal.tools (фан-сайт: раскрытое к 1.0)
+VAAL_SUB_RE = re.compile(r'<a href="(?:https://vaal\.tools)?(/release-1-0/([a-z0-9-]+)/)"[^>]*>([^<]{2,120})</a>')
+
+
+def vaal_parse(page):
+    """{категория: [(ключ, название)]} + {slug: (ссылка, название)}.
+    Блок: <span class="ri-block-title">Gems</span>; записи — <a|button data-entry="…" class="ri-name…">;
+    подзаголовки <li class="ri-class">Changed / After 1.0 (Unconfirmed)</li> помечают записи после них;
+    в Sources записей нет — там ссылки на видео/посты (ключ — ссылка)."""
+    cats = {}
+    for block in re.split(r'<span class="ri-block-title"[^>]*>', page)[1:]:
+        cat = html.unescape(block[:block.index("<")]).strip()
+        block = block.split("</section>", 1)[0]     # после последнего блока идут карточки классов — не берём
+        items, mark = [], ""
+        for li_attrs, li in re.findall(r"<ul\b|<li\b([^>]*)>(.*?)</li>", block, re.S):
+            if not li_attrs and not li:             # новый ряд (Skills → Supports): пометка не переносится
+                mark = ""
+                continue
+            if "ri-break" in li_attrs:
+                mark = ""
+                continue
+            if 'class="ri-class' in li_attrs:  # подзаголовок: класс предмета, «Changed», «After 1.0 (Unconfirmed)»
+                head = html.unescape(re.sub(r"<[^>]+>", "", li)).strip()
+                mark = (" (изменено)" if head.startswith("Changed") else
+                        " (после 1.0, не подтверждено)" if head.startswith("After 1.0") else "")
+                continue
+            m = re.search(r'data-entry="([^"]+)"[^>]*class="ri-name[^"]*"[^>]*>(.*?)</(?:a|button)>', li, re.S)
+            if m:
+                items.append((m.group(1), html.unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip() + mark))
+            elif cat == "Sources":
+                a = re.search(r'<a href="(https?://[^"]+)"[^>]*>(.*?)</a>', li, re.S)
+                if a:
+                    items.append(("src:" + html.unescape(a.group(1)), html.unescape(re.sub(r"<[^>]+>", "", a.group(2))).strip()))
+        if items:
+            cats[cat] = items
+    subs = {slug: (href, html.unescape(name).strip()) for href, slug, name in VAAL_SUB_RE.findall(page)}
+    return cats, subs
+
+
+def check_vaal(run):
+    """vaal.tools/release-1-0/ — одна страница, не чаще раза в every_minutes. Первый прогон молча запоминает всё."""
+    cfg = run.cfg.get("vaal_tools") or {}
+    if not cfg.get("enabled", True):
+        return
+    st = run.state.setdefault("vaal", {})
+    if run.ts - st.get("last", 0) < cfg.get("every_minutes", 30) * 60 - 90:
+        return
+    st["last"] = run.ts
+    url = cfg.get("url", "https://vaal.tools/release-1-0/")
+    r = run.get("vaal_tools", url)
+    if r is None:
+        return
+    cats, subs = vaal_parse(r.text)
+    total = sum(len(v) for v in cats.values())
+    if total < 20:                       # сейчас ~340 записей; пусто/мало — разметка поменялась
+        run.error("vaal_tools", f"разобрано {total} записей — разметка поменялась?")
+        return
+    first = "vaal_tools" not in run._known_sources
+    base = re.match(r"https?://[^/]+", url).group(0)
+    for slug, (href, name) in sorted(subs.items()):
+        if run.mark_undated("vaal_tools", "page:" + slug):
+            run.push("🧩", f"vaal.tools 1.0: новая страница — {name}", "vaal.tools (фан-сайт, не GGG)", base + href)
+    for cat, items in cats.items():
+        new = [name for key, name in items if run.mark_undated("vaal_tools", f"{cat}:{key}")]
+        if new:
+            names = ", ".join(new[:12]) + (f" и ещё {len(new) - 12}" if len(new) > 12 else "")
+            run.push("🧩", f"vaal.tools 1.0: новое — {cat} ({len(new)}): {names}", "vaal.tools (фан-сайт, не GGG)", url)
+    if first:
+        print(f"[vaal] первый запуск: молча запомнено {total} записей в {len(cats)} категориях и {len(subs)} подстраниц")
+
+
 # ---------------------------------------------------------------- Telegram
 def tg_send(run, text, preview=True):
     if run.dry:
@@ -931,13 +1036,50 @@ def chunks(lines, limit=3900):
     return out
 
 
+def digest_drop_reason(run, v):
+    """Почему запись дайджеста не показывать (None — показать). Те же правила, что при сборе, —
+    чтобы ушло и то, что накопилось в state до правки."""
+    if v["sec"] == "ggg":
+        if v["score"] < run.ts - ggg_max_age_h(run) * 3600:
+            return "GGG старше 36 ч"
+        return None
+    if v["sec"] not in ("yt_list", "yt_ext") or v.get("ok"):
+        return None
+    text = v["text"]
+    if v["sec"] == "yt_ext":
+        title = v.get("title") or text.split("подп.): ", 1)[-1]
+        if run.poe1_only(title):
+            return "YouTube не из списка: PoE 1"
+        return None if en_ru_title(title) else "YouTube не из списка: не en/ru"
+    title, cid = v.get("title"), v.get("cid")
+    if title is None:
+        title = text
+        for ch in run.cfg["youtube"]["channels"]:
+            if text.startswith(ch["name"] + ": "):
+                title, cid = text[len(ch["name"]) + 2:], ch["id"]
+                break
+    if run.poe1_only(title):
+        return "YouTube из списка: PoE 1"
+    share = run.state.get("yt", {}).get("share", {}).get(cid, 0)
+    return None if is_poe2_video(run, title, "", share) else "YouTube из списка: канал в основном не про PoE 2"
+
+
 def build_digest(run):
     d = run.state["digest"]
     rome = rome_time(run.t)
     lines = [f"📌 <b>Дайджест PoE 2 — {rome:%d.%m}</b>"]
     n = 0
+    dropped = {}
+    for v in d.values():
+        why = digest_drop_reason(run, v)
+        if why:
+            dropped.setdefault(why, []).append(v["text"])
+    run.digest_dropped = dropped
+    for why, texts in dropped.items():
+        print(f"[digest] отсеяно ({why}): {len(texts)} — " + " | ".join(t[:70] for t in texts[:5]))
     for sec, title in SECTION_TITLES:
-        items = sorted((v for v in d.values() if v["sec"] == sec), key=lambda v: -v["score"])
+        items = sorted((v for v in d.values() if v["sec"] == sec and not digest_drop_reason(run, v)),
+                       key=lambda v: -v["score"])
         if not items:
             continue
         lines += ["", f"<b>{esc(title)}</b>"]
@@ -948,7 +1090,9 @@ def build_digest(run):
             lines.append(f"  …и ещё {len(items) - run.th['digest_max_per_section']}")
     if not n:
         lines.append("\nЗа день ничего заметного. Сторож работает.")
-    errs = run.state["errors"].get(rome.strftime("%Y-%m-%d"), {})
+    errs = dict(run.state["errors"].get(rome.strftime("%Y-%m-%d"), {}))
+    if not (os.environ.get("REDDIT_CLIENT_ID") and os.environ.get("REDDIT_CLIENT_SECRET")):
+        errs.pop("reddit", None)          # без ключей Reddit режет анонимный доступ всегда — это не сбой
     if errs:
         lines += ["", "⚠️ <i>Сбои источников сегодня: " + esc(", ".join(f"{k} ×{v}" for k, v in sorted(errs.items()))) + "</i>"]
     return chunks(lines)
@@ -1021,7 +1165,7 @@ def main():
 
     only = {s.strip() for s in args.only.split(",")}
     for name, fn in (("ggg", check_ggg), ("reddit", check_reddit), ("youtube", check_youtube), ("twitch", check_twitch),
-                     ("poe2db", check_poe2db)):
+                     ("poe2db", check_poe2db), ("vaal", check_vaal)):
         if name not in only:
             continue
         t0 = time.time()
@@ -1042,6 +1186,8 @@ def main():
     flush_urgent(run)
     maybe_digest(run)
     prune(run)
+    for rule, texts in getattr(run, "dropped", {}).items():
+        print(f"[filter] отсеяно ({rule}): {len(texts)} — " + " | ".join(t[:70] for t in texts[:5]))
     state["runs"] = state.get("runs", 0) + 1
     state["last_run"] = iso_z(run.t)
     q = state.get("yt", {}).get("quota", {})
