@@ -620,6 +620,19 @@ def check_youtube(run):
     youtube_search(run)
 
 
+YT_POE_ANY_RE = re.compile(r"path\s*of\s*exile|\bpoe\s*[12²]?\b|\bpoe[12]\b|\bпое\s*2?\b", re.IGNORECASE)
+
+
+def yt_channel_poe_history(run, cid, vid):
+    """Есть ли среди последних роликов канала (RSS, до 15 шт., без квоты) другой ролик с PoE / Path of Exile
+    в названии. True — есть (канал не «впервые»), False — нет, None — RSS не ответил."""
+    _, entries, err = fetch_channel_feed(run, {"id": cid, "name": cid})
+    if entries is None:
+        run.error("youtube_rss", f"история канала {cid}: {err}")
+        return None
+    return any(YT_POE_ANY_RE.search(e.get("title", "")) for e in entries[:15] if e.get("yt_videoid") != vid)
+
+
 def youtube_search(run):
     th, yt = run.th, run.state.setdefault("yt", {})
     if not os.environ.get("YT_API_KEY"):
@@ -644,8 +657,8 @@ def youtube_search(run):
         sn, vid = it.get("snippet", {}), it.get("id", {}).get("videoId")
         if not vid or sn.get("channelId") in list_ids:
             continue
-        if not re.search(r"path of exile|\bpoe\b|poe2|пое", sn.get("title", "") + " " + sn.get("description", ""), re.I):
-            continue
+        if not run.kw_poe2.search(html.unescape(sn.get("title", ""))):
+            continue                      # PoE 2 только в описании/тегах (WoW, Diablo…) — не наш ролик
         if not yt_ext_ok(run, html.unescape(sn.get("title", ""))):
             run.drop("YouTube не из списка: PoE 1 / не en-ru", html.unescape(sn.get("channelTitle", "") + ": " + sn.get("title", "")))
             continue                      # PoE 1 или название не на английском/русском — ни 📺, ни дайджест
@@ -669,8 +682,17 @@ def youtube_search(run):
         poe_ch[cid] = run.ts
         if not run.mark(source, vid):
             continue
+        unsure = ""
         if first_time and subs >= th["youtube_big_channel_subscribers"]:
-            run.push("📺", f"Крупный канал впервые про PoE 2: {name} ({fmt_num(subs)} подписчиков) — «{title}»",
+            # «Впервые» = бот его раньше не видел. Проверяем по RSS канала (бесплатно): уже снимал PoE — не впервые.
+            played = yt_channel_poe_history(run, cid, vid)
+            if played:
+                first_time = False
+                run.drop("📺 не впервые: в RSS канала уже есть PoE", f"{name}: {title}")
+            elif played is None:
+                unsure = " (историю канала проверить не удалось)"
+        if first_time and subs >= th["youtube_big_channel_subscribers"]:
+            run.push("📺", f"Крупный канал впервые про PoE 2: {name} ({fmt_num(subs)} подписчиков) — «{title}»{unsure}",
                      "YouTube", url)
         elif subs >= th["youtube_digest_external_min_subscribers"]:
             run.digest("yt_ext", vid, f"{name} ({fmt_num(subs)} подп.): {title}", url, score=subs, title=title, ok=1)
@@ -1043,14 +1065,16 @@ def digest_drop_reason(run, v):
         if v["score"] < run.ts - ggg_max_age_h(run) * 3600:
             return "GGG старше 36 ч"
         return None
-    if v["sec"] not in ("yt_list", "yt_ext") or v.get("ok"):
-        return None
-    text = v["text"]
-    if v["sec"] == "yt_ext":
-        title = v.get("title") or text.split("подп.): ", 1)[-1]
+    if v["sec"] == "yt_ext":                 # и у записей с ok=1: правило «PoE 2 в названии» появилось позже
+        title = v.get("title") or v["text"].split("подп.): ", 1)[-1]
+        if not run.kw_poe2.search(title):
+            return "YouTube не из списка: нет PoE 2 в названии"
         if run.poe1_only(title):
             return "YouTube не из списка: PoE 1"
         return None if en_ru_title(title) else "YouTube не из списка: не en/ru"
+    if v["sec"] != "yt_list" or v.get("ok"):
+        return None
+    text = v["text"]
     title, cid = v.get("title"), v.get("cid")
     if title is None:
         title = text
