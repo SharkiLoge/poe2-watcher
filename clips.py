@@ -16,7 +16,6 @@ import statistics
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
-import feedparser
 import requests
 
 UTC = dt.timezone.utc
@@ -264,16 +263,18 @@ def clips_twitch(run, cs, seeding, cands, rockets):
         line_args = ("Twitch", cl["broadcaster_name"], views, age_h, speed, cl.get("title", ""), cl.get("duration", 0), cl["url"])
         if rec["p"]:
             if rec["p"] > 0 and age_h < 24 and rec.get("pr", 0) > 0 and speed >= c["rocket_speed_multiplier"] * rec["pr"]:
-                rockets.append(clip_line("🚀", "Разгоняется", *line_args))
+                run.drop("🚀 Разгоняется: клип уже присылали (одно видео — один пуш)",
+                         f"{cl['broadcaster_name']}: {cl.get('title', '')}")
                 rec["pr"] = speed
             continue
         why = tw_trigger(c, views, age_h, speed, cl["broadcaster_id"] in watch)
         if not why:
             continue
-        if seeding or cl["id"] in pushed_before:
+        if seeding or cl["id"] in pushed_before or run.was_sent("tw:" + cl["id"]):
             rec["p"] = -1          # уже было до запуска модуля / уже пушил основной модуль — молчим
             continue
-        cands.append({"rec": rec, "seen": ("twitch_clip", cl["id"]), "new": True, "b": "tw:" + cl["broadcaster_id"],
+        cands.append({"rec": rec, "seen": ("twitch_clip", cl["id"]), "key": "tw:" + cl["id"], "new": True,
+                      "b": "tw:" + cl["broadcaster_id"],
                       "who": cl["broadcaster_name"], "words": sorted(title_words(cl.get("title", ""))),
                       "platform": "Twitch", "title": cl.get("title", ""), "views": views, "url": cl["url"],
                       "speed": speed, "line": clip_line("🔥", "Клип", *line_args), "why": why})
@@ -320,19 +321,18 @@ def is_short(run, vid, seconds):
 
 
 def yt_feeds(run, channels):
+    """Ленты каналов через run.yt_feed (watcher.py): повторы при 503, кэш на прогон — 17 из 19 каналов модуля
+    уже скачал основной модуль YouTube, их сбой он же и посчитал (youtube_rss); здесь — только новые."""
+    cached = set(run._feeds)
+
     def one(ch):
-        try:
-            r = run.http.get(f"https://www.youtube.com/feeds/videos.xml?channel_id={ch['id']}", timeout=20)
-        except requests.RequestException as e:
-            return ch, None, type(e).__name__
-        if r.status_code != 200:
-            return ch, None, f"HTTP {r.status_code}"
-        return ch, feedparser.parse(r.content).entries, None
-    with ThreadPoolExecutor(max_workers=8) as ex:
+        entries, err = run.yt_feed(ch)
+        return ch, entries, err
+    with ThreadPoolExecutor(max_workers=4) as ex:
         res = list(ex.map(one, channels))
-    fails = [f"{ch['name']} ({err})" for ch, e, err in res if e is None]
+    fails = [f"{ch['name']} ({err})" for ch, e, err in res if e is None and ch["id"] not in cached]
     if fails:
-        run.error("clips_youtube", f"{len(fails)} каналов не ответили: {', '.join(fails[:5])}")
+        run.error("clips_youtube", f"{len(fails)} каналов не ответили и после повторов: {', '.join(fails[:5])}")
     return res
 
 
@@ -375,6 +375,7 @@ def clips_youtube(run, cs, seeding, cands, rockets):
         if not entries:
             continue
         base = yt_baseline(c, cs, ch["id"], entries, run.ts)
+        promo = run.yt_promo(entries)
         for e in entries:
             vid = e.get("yt_videoid")
             if not vid or not e.get("published_parsed"):
@@ -386,7 +387,8 @@ def clips_youtube(run, cs, seeding, cands, rockets):
             if not youtube_wanted(run, ch, e.get("title", ""), e.get("summary", "")):
                 continue
             rec = yv.setdefault(vid, {"c": int(pub.timestamp()), "p": 0})
-            rec.update(ch=ch["id"], n=ch["name"], t=e.get("title", ""), base=base)
+            rec.update(ch=ch["id"], n=ch["name"], t=e.get("title", ""), base=base,
+                       k=run.yt_kind(vid, e.get("title", ""), e.get("summary", ""), promo))
             fresh[vid] = rec
     stats = yt_videos(run, list(fresh))
     old_speed = run.state.setdefault("yt", {}).setdefault("videos", {})   # ролики основного модуля (🚀 в N× быстрее нормы)
@@ -406,8 +408,7 @@ def clips_youtube(run, cs, seeding, cands, rockets):
         url = f"https://www.youtube.com/watch?v={vid}"
         if rec["p"]:
             if rec["p"] > 0 and rec.get("pr", 0) > 0 and speed >= c["rocket_speed_multiplier"] * rec["pr"]:
-                plat = "YouTube Shorts" if rec.get("sh") else "YouTube"
-                rockets.append(clip_line("🚀", "Разгоняется", plat, rec["n"], views, age_h, speed, rec["t"], seconds, url))
+                run.drop("🚀 Разгоняется: ролик уже присылали (одно видео — один пуш)", f"{rec['n']}: {rec['t']}")
                 rec["pr"] = speed
             continue
         why = yt_trigger(c, views, age_h, avg, rec.get("base"))
@@ -416,9 +417,15 @@ def clips_youtube(run, cs, seeding, cands, rockets):
         if seeding or (old_speed.get(vid) or {}).get("a"):
             rec["p"] = -1
             continue
+        if not run.yt_gate(vid, rec["ch"], rec["n"], rec["t"], rec.get("k"), url):
+            if run.was_sent("yt:" + vid):  # уже присылали / компиляция → дайджест / реакция → 🎙 источник
+                rec["p"] = -1
+                if vid in old_speed:
+                    old_speed[vid]["a"] = 1
+            continue                      # не помечен — API не ответил, следующий прогон проверит снова
         rec["sh"] = is_short(run, vid, seconds)
         plat = "YouTube Shorts" if rec["sh"] else "YouTube"
-        cands.append({"rec": rec, "seen": None, "new": True, "b": "yt:" + rec["ch"], "who": rec["n"],
+        cands.append({"rec": rec, "seen": None, "key": "yt:" + vid, "new": True, "b": "yt:" + rec["ch"], "who": rec["n"],
                       "words": sorted(title_words(rec["t"])), "platform": plat, "title": rec["t"], "views": views,
                       "url": url, "speed": avg, "why": why,
                       "line": clip_line("🔥", "Клип", plat, rec["n"], views, age_h, avg, rec["t"], seconds, url)})
@@ -464,6 +471,7 @@ def check_clips(run):
             out.append(cd["line"])
     for cd in cands:
         cd["rec"]["p"], cd["rec"]["pr"] = run.ts, max(cd["speed"], 1)
+        run.mark_sent(cd["key"])
         if cd["seen"]:
             run.mark(*cd["seen"])
         recent.append({"ts": run.ts, "b": cd["b"], "who": cd["who"], "words": cd["words"], "platform": cd["platform"],

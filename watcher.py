@@ -16,6 +16,7 @@ import os
 import re
 import statistics
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -38,6 +39,7 @@ SECTION_TITLES = [
     ("reddit", "👽 Reddit r/PathOfExile2"),
     ("yt_list", "▶️ YouTube — каналы из списка (по просмотрам)"),
     ("yt_ext", "📺 YouTube — каналы не из списка"),
+    ("yt_comp", "🎞 YouTube — компиляции клипов"),
 ]
 
 
@@ -121,6 +123,12 @@ class Run:
         st.setdefault("outbox", [])
         st.setdefault("errors", {})
         st.setdefault("runs", 0)
+        if "sent" not in st:
+            st["sent"] = seed_sent(st)
+        self._err_counted = set()  # источник со сбоем считается в дайджесте один раз за прогон
+        self._feeds = {}           # RSS каналов YouTube за этот прогон: общий для основного модуля и clips.py
+        self._feed_lock = threading.Lock()
+        self._feed_hard_fails = 0  # каналов, не ответивших и после повторов (много — YouTube лежит, не ждём)
         known_sources = set(st["seen"].keys())
         self.seeding = set() if args.no_seed else None   # None = решаем по наличию источника в state
         self._known_sources = known_sources
@@ -157,6 +165,25 @@ class Run:
     def was_seen(self, source, key):
         return key in self.state["seen"].get(source, {})
 
+    # --- «одно видео — один пуш»: ключи yt:<id> / tw:<id> всего, что ушло в Telegram (или разобрано как реакция)
+    def was_sent(self, key):
+        return key in self.state["sent"]
+
+    def mark_sent(self, key):
+        self.state["sent"][key] = self.ts
+
+    def yt_kind(self, vid, title, desc, promo=()):
+        return yt_kind(vid, title, desc, promo)
+
+    def yt_promo(self, entries):
+        return yt_promo(entries)
+
+    def yt_gate(self, vid, cid, name, title, kind, url):
+        return yt_gate(self, vid, cid, name, title, kind, url)
+
+    def yt_feed(self, ch):
+        return yt_feed(self, ch)
+
     # --- вывод
     def push(self, emoji, line, source, url):
         text = f"{emoji} {esc(line)}\n<i>{esc(source)}</i> · {esc(url)}"
@@ -172,7 +199,11 @@ class Run:
         d[f"{section}|{key}"] = {"sec": section, "text": line, "url": url, "score": score, "ts": self.ts, **extra}
 
     def error(self, source, msg):
+        """В лог — каждый сбой; в счётчик дайджеста — источник один раз за прогон («×N» = N прогонов со сбоем)."""
         print(f"[warn] {source}: {msg}")
+        if source in self._err_counted:
+            return
+        self._err_counted.add(source)
         day = rome_time(self.t).strftime("%Y-%m-%d")
         errs = self.state["errors"].setdefault(day, {})
         errs[source] = errs.get(source, 0) + 1
@@ -493,15 +524,170 @@ def yt_api(run, endpoint, params, cost):
     return r.json() if r is not None else None
 
 
+def yt_feed(run, ch):
+    """RSS канала: (entries, None) или (None, "HTTP 503"/имя исключения).
+    27.11 04:25–07:55 UTC RSS YouTube отдавал 503 почти на все каналы, а через секунды на тот же адрес — 200.
+    Поэтому: до 4 попыток с паузой 2/5/8 с, через раз — та же лента по playlist_id=UU… (другой адрес, те же ролики).
+    Если за прогон уже ≥ 5 каналов не ответили и после повторов — YouTube лежит, остальным одна попытка.
+    Результат кэшируется на прогон: clips.py берёт те же ленты, а не качает второй раз."""
+    cid = ch["id"]
+    with run._feed_lock:
+        if cid in run._feeds:
+            return run._feeds[cid]
+    urls = [f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}"]
+    if cid.startswith("UC"):
+        urls.append(f"https://www.youtube.com/feeds/videos.xml?playlist_id=UU{cid[2:]}")
+    tries = 1 if run._feed_hard_fails >= 5 else 4
+    res = (None, "—")
+    for k in range(tries):
+        try:
+            r = run.http.get(urls[k % len(urls)], timeout=15)
+            if r.status_code == 200:
+                entries = feedparser.parse(r.content).entries
+                res = (entries, None)
+                break
+            res = (None, f"HTTP {r.status_code}")
+            if r.status_code == 404 and k:      # 404 по обоим адресам — канала нет / неверный ID, ждать нечего
+                break
+        except requests.RequestException as e:
+            res = (None, type(e).__name__)
+        if k + 1 < tries:
+            time.sleep(2 + 3 * k)
+    with run._feed_lock:
+        if res[0] is None:
+            run._feed_hard_fails += 1
+        run._feeds[cid] = res
+    return res
+
+
 def fetch_channel_feed(run, ch):
-    url = f"https://www.youtube.com/feeds/videos.xml?channel_id={ch['id']}"
-    try:
-        r = run.http.get(url, timeout=20)
-    except requests.RequestException as e:
-        return ch, None, type(e).__name__
-    if r.status_code != 200:
-        return ch, None, f"HTTP {r.status_code}"
-    return ch, feedparser.parse(r.content).entries, None
+    entries, err = yt_feed(run, ch)
+    return ch, entries, err
+
+
+def seed_sent(st):
+    """Первый запуск с «одно видео — один пуш»: собрать из state то, что уже уходило в Telegram."""
+    sent = {}
+    cs = st.get("clips", {})
+    for vid, rec in cs.get("yt", {}).items():
+        if rec.get("p", 0) > 0:
+            sent["yt:" + vid] = rec["p"]
+    for cl, rec in cs.get("tw", {}).items():
+        if rec.get("p", 0) > 0:
+            sent["tw:" + cl] = rec["p"]
+    for vid, d in st.get("yt", {}).get("videos", {}).items():
+        if d.get("a"):                       # 🚀 основного модуля или 🔥 clips.py (он ставит a=1)
+            sent.setdefault("yt:" + vid, d.get("p", 0))
+    for cl, ts in st.get("seen", {}).get("twitch_clip", {}).items():
+        sent.setdefault("tw:" + cl, ts)
+    return sent
+
+
+# ---------------------------------------------------------------- реакции и компиляции
+YT_VID_RE = re.compile(r"(?:youtube\.com/(?:watch\?(?:[^\s\"'<>]*?&)?v=|shorts/|live/)|youtu\.be/)([A-Za-z0-9_-]{11})")
+REACT_TITLE_RE = re.compile(r"\breact(?:s|ing|ion|ions)?\b|\bwatching\b|реакци", re.IGNORECASE)
+TS_NICK_RE = re.compile(r"^[ \t]*(?:\d{1,2}:)?\d{1,2}:\d{2}[ \t]*[-–—:|]?[ \t]*@?([A-Za-z0-9_.\-]{2,30})[ \t]*$", re.MULTILINE)
+NOT_NICK = {"intro", "outro", "end", "ending", "start", "credits", "conclusion", "bonus"}
+
+
+def nick_like(w):
+    """Похоже на ник, а не на обычное слово главы («Monk», «Warrior»): цифра, _, заглавная внутри, всё строчными."""
+    return bool(re.search(r"\d|_", w) or re.search(r"[a-z][A-Z]", w) or w.islower())
+
+
+REACT_CUE_RE = re.compile(r"original|interview|footage|react|video by|source|credit|оригинал|интервью|источник|реакц",
+                          re.IGNORECASE)
+
+
+def desc_head_links(desc, title=None):
+    """Ссылки на ролики YouTube в первых 3 непустых строках описания. С title — только «ссылки на оригинал»:
+    в строке ссылки, строкой выше или в названии есть original/interview/footage/react/… (у GhazzyTV «Check out the
+    original interview HERE!», у Zizaran «Original video by»). Без этого слова ссылка в шапке — обычно свой или
+    чужой гайд «посмотрите ещё» (Lolcohol → гайд MisoxShiru, Ruetoo, Master T), а не источник."""
+    head = [ln for ln in html.unescape(desc or "").splitlines() if ln.strip()][:3]
+    out = []
+    for i, ln in enumerate(head):
+        for v in YT_VID_RE.findall(ln):
+            ctx = ln + "\n" + (head[i - 1] if i else "") + "\n" + (title or "")
+            if title is None or REACT_CUE_RE.search(ctx):
+                out.append(v)
+    return out
+
+
+def yt_promo(entries):
+    """Ссылки, которые канал ставит в шапку описания у ≥ 2 роликов из RSS, — постоянная реклама своего гайда,
+    а не источник реакции (Lolcohol, SnooBAE85, XTheFarmerX, Kwazi — 27.11)."""
+    cnt = {}
+    for e in entries or []:
+        for v in set(desc_head_links(e.get("summary"))):
+            cnt[v] = cnt.get(v, 0) + 1
+    return {v for v, n in cnt.items() if n >= 2}
+
+
+def yt_kind(vid, title, desc, promo=()):
+    """["comp", None] — компиляция клипов: в описании таймкоды с ≥ 10 разными метками, из них ≥ 3 похожи на ники,
+    и упомянут Twitch/стримеры (Exiled Again, POEClipZ);
+    ["react", id|None] — реакция/пересказ: в первых 3 строках описания ссылка на чужой оригинал (desc_head_links, не promo)
+    или в названии react/reacts/reacting/reaction/watching/реакция (тогда источник — первая ссылка в описании);
+    None — обычный ролик."""
+    desc = html.unescape(desc or "")
+    labels = {m.group(1) for m in TS_NICK_RE.finditer(desc) if m.group(1).lower() not in NOT_NICK}
+    if (len({x.lower() for x in labels}) >= 10 and sum(map(nick_like, labels)) >= 3
+            and re.search(r"twitch|streamer|стример", desc, re.IGNORECASE)):
+        return ["comp", None]
+    links = [v for v in desc_head_links(desc, title or "") if v != vid and v not in promo]
+    if links:
+        return ["react", links[0]]
+    if REACT_TITLE_RE.search(title or ""):
+        links = [v for v in YT_VID_RE.findall(desc) if v != vid and v not in promo]
+        return ["react", links[0] if links else None]
+    return None
+
+
+def yt_gate(run, vid, cid, name, title, kind, url):
+    """Перед пушем про ролик YouTube. True — слать сам ролик. False — не слать: уже присылали, компиляция
+    (строка в дайджест) или реакция (вместо неё — 🎙 источник, если его ещё не присылали и ему ≤ 3 дней)."""
+    if run.was_sent("yt:" + vid):
+        run.drop("повтор: ролик уже присылали", f"{name}: {title}")
+        return False
+    if kind and kind[0] == "comp":
+        run.digest("yt_comp", vid, f"Компиляция {name}", url, score=0)
+        run.drop("компиляция клипов → дайджест", f"{name}: {title}")
+        run.mark_sent("yt:" + vid)
+        return False
+    if not (kind and kind[0] == "react"):
+        return True
+    src = kind[1]
+    if not src:
+        run.drop("реакция без ссылки на источник — не шлю", f"{name}: {title}")
+        run.mark_sent("yt:" + vid)
+        return False
+    if run.was_sent("yt:" + src):
+        run.drop("реакция: источник уже присылали", f"{name}: {title} → {src}")
+        run.mark_sent("yt:" + vid)
+        return False
+    data = yt_api(run, "videos", {"part": "snippet", "id": src}, 1)
+    items = (data or {}).get("items", [])
+    if data is None:
+        run.drop("реакция: YouTube API не ответил — источник не проверить, не шлю", f"{name}: {title} → {src}")
+        return False                      # не помечаем: следующий прогон попробует ещё раз
+    if not items:
+        run.drop("реакция: источник удалён/скрыт — не шлю", f"{name}: {title} → {src}")
+        run.mark_sent("yt:" + vid)
+        return False
+    sn = items[0]["snippet"]
+    if sn.get("channelId") == cid and not REACT_TITLE_RE.search(title or ""):
+        return True                       # ссылка на свой же ролик («часть 1 тут») — не реакция
+    run.mark_sent("yt:" + vid)
+    age_h = (run.t - parse_iso(sn["publishedAt"])).total_seconds() / 3600
+    if age_h > 72:
+        run.drop("реакция: источнику больше 3 дней — не шлю", f"{name}: {title} → {sn.get('title')} ({age_h / 24:.1f} дн.)")
+        return False
+    src_url = f"https://www.youtube.com/watch?v={src}"
+    run.urgent.append(f"🎙 Источник (нашёл через реакцию {esc(name)}): {esc(html.unescape(sn.get('title', '')))} · {esc(src_url)}")
+    run.mark_sent("yt:" + src)
+    print(f"[react] {name}: «{title}» → источник {src} «{sn.get('title')}» ({sn.get('channelTitle')}, {age_h:.0f} ч)")
+    return False
 
 
 def en_ru_title(title):
@@ -534,16 +720,17 @@ def check_youtube(run):
     norms = yt.setdefault("norms", {})
     boot = yt.setdefault("boot", {})
     chans = run.cfg["youtube"]["channels"]
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    with ThreadPoolExecutor(max_workers=4) as ex:       # 8 потоков = лишний повод для 503 от RSS
         results = list(ex.map(lambda c: fetch_channel_feed(run, c), chans))
     fails = [f"{c['name']} ({err})" for c, entries, err in results if entries is None]
     if fails:
-        run.error("youtube_rss", f"{len(fails)} каналов не ответили: {', '.join(fails[:5])}")
+        run.error("youtube_rss", f"{len(fails)} из {len(chans)} каналов не ответили и после повторов: {', '.join(fails[:5])}")
     max_age_h = th["youtube_speed_max_age_hours"]
     for ch, entries, _ in results:
         if not entries:
             continue
         cid = ch["id"]
+        promo = yt_promo(entries)
         share = sum(1 for e in entries if run.kw_poe2.search(e.get("title", "") + " " + e.get("summary", ""))) / len(entries)
         yt.setdefault("share", {})[cid] = round(share, 2)   # для фильтра уже накопленного в дайджесте
         # Норма-заготовка, пока не накопились реальные замеры за 6 ч: доля от медианы просмотров роликов старше 3 дней.
@@ -572,8 +759,9 @@ def check_youtube(run):
                     # Официальный канал GGG: любой новый ролик не только про PoE 1 — сразу пуш.
                     # Решаем по названию: ролики PoE 1 GGG подписывает явно («Path of Exile 1: …», лига PoE 1),
                     # а доклады ExileCon про обе игры в описании упоминают PoE 1 — их не теряем.
-                    if age_h < 72 and not run.poe1_only(title):
+                    if age_h < 72 and not run.poe1_only(title) and not run.was_sent("yt:" + vid):
                         run.push("🔥", f"GGG на YouTube: {title}", "YouTube Path of Exile", url)
+                        run.mark_sent("yt:" + vid)
                 elif age_h < 48 and re.search(r"path of exile|\bpoe|пое|wraeclast|exile", title + " " + e.get("summary", ""), re.I):
                     if yt_list_ok(run, title, e.get("summary"), share):
                         run.digest("yt_list", vid, f"{ch['name']}: {title}", url, score=views, title=title, cid=cid, ok=1)
@@ -584,6 +772,8 @@ def check_youtube(run):
                                "poe2": is_poe2_video(run, title, e.get("summary"), share), "a": 0, "s": 0}
             elif vid in videos:
                 videos[vid]["v"] = max(videos[vid]["v"], views)
+            if vid in videos:
+                videos[vid]["k"] = yt_kind(vid, title, e.get("summary"), promo)   # реакция / компиляция — по описанию
     # Свежие просмотры — videos.list (1 единица квоты на 50 роликов). Без ключа остаются цифры из RSS.
     ids = [v for v, d in videos.items() if run.ts - d["p"] <= max_age_h * 3600 + 3600]
     for i in range(0, len(ids), 50):
@@ -612,7 +802,12 @@ def check_youtube(run):
             continue
         expected = norm * (age_h / nh) ** (0.6 if age_h <= nh else 0.35)
         if d["v"] >= th["youtube_speed_min_views"] and d["v"] >= th["youtube_speed_multiplier"] * expected:
+            if not run.yt_gate(vid, d["c"], d["n"], d["t"], d.get("k"), f"https://www.youtube.com/watch?v={vid}"):
+                if run.was_sent("yt:" + vid):
+                    d["a"] = 1            # разобран (повтор / компиляция / реакция); иначе API не ответил — проверим снова
+                continue
             d["a"] = 1
+            run.mark_sent("yt:" + vid)
             k = d["v"] / max(expected, 1)
             run.push("🚀", f"YouTube в {k:.0f}× быстрее нормы: {d['n']} — «{d['t']}»: {fmt_num(d['v'])} просмотров "
                            f"за {age_h:.1f} ч (норма канала ~{fmt_num(norm)} за {nh} ч)",
@@ -691,7 +886,9 @@ def youtube_search(run):
                 run.drop("📺 не впервые: в RSS канала уже есть PoE", f"{name}: {title}")
             elif played is None:
                 unsure = " (историю канала проверить не удалось)"
-        if first_time and subs >= th["youtube_big_channel_subscribers"]:
+        if (first_time and subs >= th["youtube_big_channel_subscribers"]
+                and run.yt_gate(vid, cid, name, title, yt_kind(vid, title, sn.get("description")), url)):
+            run.mark_sent("yt:" + vid)
             run.push("📺", f"Крупный канал впервые про PoE 2: {name} ({fmt_num(subs)} подписчиков) — «{title}»{unsure}",
                      "YouTube", url)
         elif subs >= th["youtube_digest_external_min_subscribers"]:
@@ -1108,7 +1305,10 @@ def build_digest(run):
             continue
         lines += ["", f"<b>{esc(title)}</b>"]
         for v in items[: run.th["digest_max_per_section"]]:
-            lines.append(f"• <a href=\"{esc(v['url'])}\">{esc(v['text'][:150])}</a>")
+            if sec == "yt_comp":           # «Компиляция <канал>: <ссылка>» — одной строкой
+                lines.append(f"• {esc(v['text'][:150])}: {esc(v['url'])}")
+            else:
+                lines.append(f"• <a href=\"{esc(v['url'])}\">{esc(v['text'][:150])}</a>")
             n += 1
         if len(items) > run.th["digest_max_per_section"]:
             lines.append(f"  …и ещё {len(items) - run.th['digest_max_per_section']}")
@@ -1118,7 +1318,7 @@ def build_digest(run):
     if not (os.environ.get("REDDIT_CLIENT_ID") and os.environ.get("REDDIT_CLIENT_SECRET")):
         errs.pop("reddit", None)          # без ключей Reddit режет анонимный доступ всегда — это не сбой
     if errs:
-        lines += ["", "⚠️ <i>Сбои источников сегодня: " + esc(", ".join(f"{k} ×{v}" for k, v in sorted(errs.items()))) + "</i>"]
+        lines += ["", "⚠️ <i>Сбои источников сегодня (число прогонов со сбоем): " + esc(", ".join(f"{k} ×{v}" for k, v in sorted(errs.items()))) + "</i>"]
     return chunks(lines)
 
 
@@ -1157,6 +1357,8 @@ def prune(run):
             del bucket[k]
     for k in [k for k, v in st["digest"].items() if run.ts - v["ts"] > 3 * 86400]:
         del st["digest"][k]
+    for k in [k for k, v in st["sent"].items() if run.ts - v > 14 * 86400]:
+        del st["sent"][k]
     for day in sorted(st["errors"])[:-3]:
         del st["errors"][day]
 
