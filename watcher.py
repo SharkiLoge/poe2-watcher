@@ -40,6 +40,7 @@ SECTION_TITLES = [
     ("yt_list", "▶️ YouTube — каналы из списка (по просмотрам)"),
     ("yt_ext", "📺 YouTube — каналы не из списка"),
     ("yt_comp", "🎞 YouTube — компиляции клипов"),
+    ("yt_live", "🔴 YouTube — стримы каналов из списка"),
 ]
 
 
@@ -719,6 +720,12 @@ def check_youtube(run):
     videos = yt.setdefault("videos", {})
     norms = yt.setdefault("norms", {})
     boot = yt.setdefault("boot", {})
+    # Ролики с liveStreamingDetails (идущий стрим, запись стрима, премьера): id -> когда узнали. Их просмотры включают
+    # зрителей эфира — с обычными роликами несравнимы: ни 🚀, ни норма канала (ни здесь, ни в clips.py), только
+    # строка «Стрим …» в дайджест. Помним 30 дней — столько живут ролики в RSS, из которого строится норма-заготовка.
+    live = yt.setdefault("live", {})
+    for k in [k for k, ts in live.items() if run.ts - ts > 30 * 86400]:
+        del live[k]
     chans = run.cfg["youtube"]["channels"]
     with ThreadPoolExecutor(max_workers=4) as ex:       # 8 потоков = лишний повод для 503 от RSS
         results = list(ex.map(lambda c: fetch_channel_feed(run, c), chans))
@@ -738,6 +745,8 @@ def check_youtube(run):
         if not b or run.ts - b.get("ts", 0) > 7 * 86400:
             old = []
             for e in entries:
+                if e.get("yt_videoid") in live:
+                    continue                  # запись стрима / премьера — просмотры эфира, норму не портит
                 if e.get("published_parsed") and e.get("media_statistics"):
                     pub = dt.datetime(*e.published_parsed[:6], tzinfo=UTC)
                     if (run.t - pub).days >= 3:
@@ -774,21 +783,37 @@ def check_youtube(run):
                 videos[vid]["v"] = max(videos[vid]["v"], views)
             if vid in videos:
                 videos[vid]["k"] = yt_kind(vid, title, e.get("summary"), promo)   # реакция / компиляция — по описанию
-    # Свежие просмотры — videos.list (1 единица квоты на 50 роликов). Без ключа остаются цифры из RSS.
+    # Свежие просмотры — videos.list (1 единица квоты на 50 роликов при любом наборе part, поэтому
+    # liveStreamingDetails берём тем же вызовом). Без ключа остаются цифры из RSS, и стрим от ролика не отличить.
     ids = [v for v, d in videos.items() if run.ts - d["p"] <= max_age_h * 3600 + 3600]
     for i in range(0, len(ids), 50):
-        data = yt_api(run, "videos", {"part": "statistics", "id": ",".join(ids[i:i + 50]), "maxResults": 50}, 1)
+        data = yt_api(run, "videos", {"part": "statistics,liveStreamingDetails", "id": ",".join(ids[i:i + 50]),
+                                      "maxResults": 50}, 1)
         for it in (data or {}).get("items", []):
-            videos[it["id"]]["v"] = int(it.get("statistics", {}).get("viewCount", 0))
+            d = videos[it["id"]]
+            d["v"] = int(it.get("statistics", {}).get("viewCount", 0))
             dk = f"yt_list|{it['id']}"
+            if "liveStreamingDetails" in it and not d.get("live"):
+                d["live"] = 1
+                live[it["id"]] = run.ts
+                had = run.state["digest"].pop(dk, None)
+                if had or (d["poe2"] and not run.poe1_only(d["t"])):
+                    run.digest("yt_live", it["id"], f"Стрим {d['n']}: {d['t']}",
+                               f"https://www.youtube.com/watch?v={it['id']}", score=d["v"])
+                if not d["a"]:
+                    run.drop("запись стрима / премьера — не 🚀, строка в дайджест", f"{d['n']}: {d['t']}")
             if dk in run.state["digest"]:
-                run.state["digest"][dk]["score"] = videos[it["id"]]["v"]
+                run.state["digest"][dk]["score"] = d["v"]
+            elif f"yt_live|{it['id']}" in run.state["digest"]:
+                run.state["digest"][f"yt_live|{it['id']}"]["score"] = d["v"]
     nh = th["youtube_norm_hours"]
     for vid, d in list(videos.items()):
         age_h = (run.ts - d["p"]) / 3600
         if age_h > max_age_h + 2:
             del videos[vid]
             continue
+        if d.get("live") or vid in live:
+            continue                      # стрим / запись стрима / премьера: ни замера нормы, ни 🚀
         samples = norms.get(d["c"], [])
         if not d["s"] and age_h >= nh:
             d["s"] = 1
@@ -1307,6 +1332,8 @@ def build_digest(run):
         for v in items[: run.th["digest_max_per_section"]]:
             if sec == "yt_comp":           # «Компиляция <канал>: <ссылка>» — одной строкой
                 lines.append(f"• {esc(v['text'][:150])}: {esc(v['url'])}")
+            elif sec == "yt_live":         # «Стрим <канал>: <название> <ссылка>» — одной строкой
+                lines.append(f"• {esc(v['text'][:150])} {esc(v['url'])}")
             else:
                 lines.append(f"• <a href=\"{esc(v['url'])}\">{esc(v['text'][:150])}</a>")
             n += 1

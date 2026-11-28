@@ -288,7 +288,8 @@ def pacific_day(t):
 
 
 def yt_videos(run, ids):
-    """videos.list (statistics + contentDetails): 1 единица квоты на 50 роликов; общий дневной лимит бота."""
+    """videos.list (statistics + contentDetails + liveStreamingDetails): 1 единица квоты на 50 роликов при любом
+    наборе part; общий дневной лимит бота. Возвращает id -> (просмотры, секунды, стрим/премьера ли)."""
     key = os.environ.get("YT_API_KEY")
     out = {}
     if not key:
@@ -304,10 +305,12 @@ def yt_videos(run, ids):
             break
         q["used"] += 1
         r = run.get("clips_youtube", "https://www.googleapis.com/youtube/v3/videos",
-                    params={"part": "statistics,contentDetails", "id": ",".join(ids[i:i + 50]), "key": key})
+                    params={"part": "statistics,contentDetails,liveStreamingDetails", "id": ",".join(ids[i:i + 50]),
+                            "key": key})
         for it in (r.json().get("items", []) if r is not None else []):
             out[it["id"]] = (int(it.get("statistics", {}).get("viewCount", 0)),
-                             iso_dur(it.get("contentDetails", {}).get("duration")))
+                             iso_dur(it.get("contentDetails", {}).get("duration")),
+                             "liveStreamingDetails" in it)
     return out
 
 
@@ -336,15 +339,17 @@ def yt_feeds(run, channels):
     return res
 
 
-def yt_baseline(c, cs, cid, entries, now_ts):
+def yt_baseline(c, cs, cid, entries, now_ts, live=()):
     """Средняя скорость канала (просм./ч за первые сутки) по последним 10 роликам.
     Свои замеры (ролик увидели в возрасте ~сутки) — когда их ≥ 3; до того — из RSS:
-    просмотры роликов старше суток × доля первых суток / 24."""
+    просмотры роликов старше суток × доля первых суток / 24. Записи стримов и премьеры (live) не в счёт."""
     own = cs.setdefault("yt_base", {}).get(cid, [])
     if len(own) >= 3:
         return statistics.mean(own[-10:])
     old = []
     for e in entries:
+        if e.get("yt_videoid") in live:
+            continue
         if e.get("published_parsed") and e.get("media_statistics"):
             age_d = (now_ts - dt.datetime(*e.published_parsed[:6], tzinfo=UTC).timestamp()) / 86400
             if 1 <= age_d <= 60:
@@ -370,11 +375,12 @@ def clips_youtube(run, cs, seeding, cands, rockets):
         return
     cs["yt_last"] = run.ts
     yv = cs.setdefault("yt", {})
+    live = run.state.setdefault("yt", {}).setdefault("live", {})   # стримы/премьеры, найденные watcher.py и здесь
     fresh = {}
     for ch, entries, _ in yt_feeds(run, c["youtube_channels"]):
         if not entries:
             continue
-        base = yt_baseline(c, cs, ch["id"], entries, run.ts)
+        base = yt_baseline(c, cs, ch["id"], entries, run.ts, live)
         promo = run.yt_promo(entries)
         for e in entries:
             vid = e.get("yt_videoid")
@@ -395,8 +401,17 @@ def clips_youtube(run, cs, seeding, cands, rockets):
     for vid, rec in fresh.items():
         if vid not in stats:
             continue
-        views, seconds = stats[vid]
+        views, seconds, is_live = stats[vid]
         rec["d"] = seconds
+        if is_live or vid in live or (old_speed.get(vid) or {}).get("live"):
+            # Идущий стрим / запись стрима / премьера — не клип: ни 🔥, ни замер скорости канала.
+            # Строку «Стрим …» в дайджест ставит основной модуль (для каналов из его списка). Клипы ИЗ стрима —
+            # отдельные ролики/клипы со своими id, их правила не меняются.
+            live.setdefault(vid, run.ts)
+            if not rec.get("lv"):
+                rec["lv"] = 1
+                run.drop("🔥: запись стрима / премьера — не клип", f"{rec['n']}: {rec['t']}")
+            continue
         age_h = (run.ts - rec["c"]) / 3600
         avg, speed = speeds(rec, views, run.ts)
         snap(rec, views, run.ts)
@@ -531,7 +546,9 @@ def simulate(run, curve=0.5):
     for vid in vids:
         if vid not in stats:
             continue
-        (V, secs), (ch, title, A, base) = stats[vid], meta[vid]
+        (V, secs, is_live), (ch, title, A, base) = stats[vid], meta[vid]
+        if is_live:
+            continue                      # стрим / премьера — не клип (как в clips_youtube)
         t = 0.25
         while t <= A:
             v = V * (t / A) ** curve
