@@ -726,6 +726,7 @@ def check_youtube(run):
     live = yt.setdefault("live", {})
     for k in [k for k, ts in live.items() if run.ts - ts > 30 * 86400]:
         del live[k]
+    peaks = yt.setdefault("peaks", {})   # записи стримов из «🔴 стримы»: пики heatmap после конца эфира (live_peaks)
     chans = run.cfg["youtube"]["channels"]
     with ThreadPoolExecutor(max_workers=4) as ex:       # 8 потоков = лишний повод для 503 от RSS
         results = list(ex.map(lambda c: fetch_channel_feed(run, c), chans))
@@ -798,10 +799,16 @@ def check_youtube(run):
                 live[it["id"]] = run.ts
                 had = run.state["digest"].pop(dk, None)
                 if had or (d["poe2"] and not run.poe1_only(d["t"])):
+                    d["lq"] = 1                   # стрим в «🔴 стримы» — за ним следит live_peaks
                     run.digest("yt_live", it["id"], f"Стрим {d['n']}: {d['t']}",
                                f"https://www.youtube.com/watch?v={it['id']}", score=d["v"])
                 if not d["a"]:
                     run.drop("запись стрима / премьера — не 🚀, строка в дайджест", f"{d['n']}: {d['t']}")
+            lsd = it.get("liveStreamingDetails")
+            if lsd is not None and (d.get("lq") or it["id"] in peaks or (d["poe2"] and not run.poe1_only(d["t"]))):
+                pk = peaks.setdefault(it["id"], {"c": d["c"], "n": d["n"], "t": d["t"], "reg": run.ts})
+                if lsd.get("actualEndTime") and not pk.get("end"):
+                    pk["end"] = int(parse_iso(lsd["actualEndTime"]).timestamp())   # из того же ответа API
             if dk in run.state["digest"]:
                 run.state["digest"][dk]["score"] = d["v"]
             elif f"yt_live|{it['id']}" in run.state["digest"]:
@@ -837,7 +844,159 @@ def check_youtube(run):
             run.push("🚀", f"YouTube в {k:.0f}× быстрее нормы: {d['n']} — «{d['t']}»: {fmt_num(d['v'])} просмотров "
                            f"за {age_h:.1f} ч (норма канала ~{fmt_num(norm)} за {nh} ч)",
                      "YouTube", f"https://www.youtube.com/watch?v={vid}")
+    live_peaks(run)
     youtube_search(run)
+
+
+# ---------------------------------------------------------------- пики интереса в записях стримов
+# Клипы, вырезанные из трансляции YouTube (youtube.com/clip/…), YouTube Data API не отдаёт. Замена — heatmap
+# «Most replayed» записи. Берём его из youtubei/v1/next — тот же запрос, что делает веб-плеер при открытии ролика
+# (без ключа и без квоты Data API): frameworkUpdates.entityBatchUpdate.mutations[].payload.macroMarkersListEntity
+# .markersList (markerType MARKER_TYPE_HEATMAP, 100 маркеров: startMillis, durationMillis, intensityScoreNormalized 0..1).
+# Там же главы (chapterRenderer, в т. ч. автоглавы YouTube) и описание (attributedDescription.content).
+# HTML страницы /watch не годится: 28.11 у IcQD8IF8Kcw heatmap в HTML не было, а в /next — был.
+# Конец эфира (actualEndTime) приходит в уже идущем videos.list.
+# Калибровка 28.11: heatmap есть у 2 из 130 роликов каналов-стримеров списка и у 0 из 49 записей стримов
+# (в т. ч. 5–10-часовые записи на 47–117K просмотров) — YouTube строит его только популярным роликам.
+# Поэтому пик из heatmap — редкость; основной улов модуля — таймкоды автора (описание, главы).
+LIVE_PEAKS_DEFAULT = {
+    "first_after_hours": 2,     # первая проверка — через 2 ч после конца эфира (раньше heatmap обычно нет)
+    "every_hours": 2.5,         # дальше — раз в 2,5 ч
+    "window_hours": 48,         # следим 48 ч после конца эфира
+    "max_pages_per_run": 6,     # не больше запросов /next за прогон (ответ ~0,5 МБ)
+    "skip_edge_markers": 1,     # первый и последний маркер не в счёт: «начало эфира» и «конец» пересматривают всегда
+    "digest_ratio": 2.5,        # пик в дайджест: маркер ≥ 2,5× медианы и в топ-3 по ролику
+    "digest_top": 3,
+    "push_ratio": 4.0,          # 🎯 пуш: самый сильный пик ≥ 4× медианы (один пуш на стрим)
+    "keywords": ["drop", "mirror", "mageblood", "headhunter", "insane", "crazy", "jackpot", "world first", "record",
+                 "rip", "дроп", "зеркал", "безум"],
+}
+YT_NEXT_URL = "https://www.youtube.com/youtubei/v1/next?prettyPrint=false"
+YT_NEXT_CLIENT = {"clientName": "WEB", "clientVersion": "2.20251120.01.00", "hl": "en", "gl": "US"}
+YT_WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
+TS_RE = re.compile(r"(?<![\d:])(?:(\d{1,2}):)?(\d{1,2}):(\d{2})(?![\d:])")
+
+
+def iter_dicts(o):
+    stack = [o]
+    while stack:
+        x = stack.pop()
+        if isinstance(x, dict):
+            yield x
+            stack.extend(x.values())
+        elif isinstance(x, list):
+            stack.extend(x)
+
+
+def yt_moments(data):
+    """Из ответа youtubei/v1/next: (heatmap [(сек, интенсивность)], описание, главы [(сек, название)])."""
+    heat, chapters, desc = [], [], ""
+    for o in iter_dicts(data):
+        ad = o.get("attributedDescription")
+        if isinstance(ad, dict) and len(ad.get("content") or "") > len(desc):
+            desc = ad["content"]
+        mle = o.get("macroMarkersListEntity")
+        ml = mle.get("markersList") if isinstance(mle, dict) else None
+        if isinstance(ml, dict) and ml.get("markerType") == "MARKER_TYPE_HEATMAP" and not heat:
+            heat = sorted((int(m["startMillis"]) // 1000, float(m.get("intensityScoreNormalized", 0)))
+                          for m in ml.get("markers", []) if "startMillis" in m)
+        cr = o.get("chapterRenderer")
+        if isinstance(cr, dict) and cr.get("timeRangeStartMillis") is not None:
+            chapters.append((int(cr["timeRangeStartMillis"]) // 1000, (cr.get("title") or {}).get("simpleText", "")))
+    return heat, desc, sorted(set(chapters))
+
+
+def heat_peaks(heat, lp):
+    """Пики heatmap: [(сек, во сколько раз выше медианы)], сильнейший первым. Пик — локальный максимум
+    (не ниже соседей), не крайний маркер, в топ-N по ролику, ≥ digest_ratio × медианы; пики не ближе 3 маркеров."""
+    e = max(lp["skip_edge_markers"], 1)
+    if len(heat) < 20:
+        return []
+    s = [v for _, v in heat]
+    med = statistics.median(s)
+    if med <= 0:
+        return []
+    cand = [i for i in range(e, len(s) - e) if s[i] >= s[i - 1] and s[i] >= s[i + 1]]
+    cand.sort(key=lambda i: -s[i])
+    out = []
+    for i in cand:
+        if len(out) >= lp["digest_top"]:
+            break
+        if all(abs(i - j) >= 3 for j, _ in out):
+            out.append((i, s[i] / med))
+    return [(heat[i][0], r) for i, r in out if r >= lp["digest_ratio"]]
+
+
+def kw_stamps(desc, chapters, lp):
+    """Таймкоды автора (описание и главы) со словами из keywords: [(сек, текст)]."""
+    kw = kw_regex(lp["keywords"])
+    out = {}
+    for ln in (desc or "").splitlines():
+        m = TS_RE.search(ln)
+        if m and kw.search(ln):
+            sec = int(m.group(1) or 0) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+            txt = (ln[:m.start()] + ln[m.end():]).strip(" -–—:|\t")
+            out.setdefault(sec, txt[:80])
+    for sec, title in chapters:
+        if kw.search(title or ""):
+            out.setdefault(sec, title[:80])
+    return sorted(out.items())
+
+
+def hms(sec):
+    return f"{sec // 3600:02d}:{sec % 3600 // 60:02d}:{sec % 60:02d}"
+
+
+def live_peaks(run):
+    """Записи стримов из «🔴 стримы»: после конца эфира раз в 2,5 ч в течение 48 ч — youtubei/v1/next (без квоты),
+    пики heatmap и таймкоды автора строками под стримом в дайджесте; очень сильный пик — один пуш 🎯 на стрим.
+    Пороги — config.json → youtube.live_peaks (поверх LIVE_PEAKS_DEFAULT).
+    Нет heatmap / запрос не ответил — молча (это не сбой источника, в дайджест не идёт)."""
+    lp = {**LIVE_PEAKS_DEFAULT, **run.cfg["youtube"].get("live_peaks", {})}
+    peaks = run.state.setdefault("yt", {}).setdefault("peaks", {})
+    for vid in [v for v, pk in peaks.items()
+                if (run.ts - pk["end"] > (lp["window_hours"] + 24) * 3600 if pk.get("end")
+                    else run.ts - pk["reg"] > 7 * 86400)]:
+        del peaks[vid]                    # конец окна + сутки; без конца эфира — неделя с регистрации
+    due = [(pk.get("chk", 0), vid) for vid, pk in peaks.items()
+           if pk.get("end") and lp["first_after_hours"] * 3600 <= run.ts - pk["end"] <= lp["window_hours"] * 3600
+           and run.ts - pk.get("chk", 0) >= lp["every_hours"] * 3600 - 300]
+    for _, vid in sorted(due)[: lp["max_pages_per_run"]]:
+        pk = peaks[vid]
+        pk["chk"] = run.ts
+        url = f"https://www.youtube.com/watch?v={vid}"
+        try:
+            r = run.http.post(YT_NEXT_URL, json={"context": {"client": YT_NEXT_CLIENT}, "videoId": vid},
+                              headers={"User-Agent": YT_WEB_UA}, timeout=20)
+            heat, desc, chapters = yt_moments(r.json()) if r.status_code == 200 else ([], "", [])
+        except (requests.RequestException, ValueError) as e:
+            print(f"[peaks] {pk['n']} {vid}: {type(e).__name__} — пропуск")
+            continue
+        found = heat_peaks(heat, lp)
+        stamps = kw_stamps(desc, chapters, lp)
+        print(f"[peaks] {pk['n']} {vid}: heatmap {len(heat)}, пиков {len(found)}"
+              + (f" (сильнейший {found[0][1]:.1f}× медианы в {hms(found[0][0])})" if found else "")
+              + f", таймкодов автора {len(stamps)}")
+        step = (heat[1][0] - heat[0][0]) if len(heat) > 1 else 60
+        items = [(sec, f"Пик {hms(sec)} — {url}&t={sec}s") for sec, _ in found]
+        items += [(sec, f"Таймкод автора {hms(sec)} «{txt}» — {url}&t={sec}s") for sec, txt in stamps]
+        if items:
+            dk = f"yt_live|{vid}"
+            ent = run.state["digest"].get(dk)
+            created = ent is None
+            if created:                   # строку стрима уже отправили с прошлым дайджестом — новая, только с новым
+                run.digest("yt_live", vid, f"Стрим {pk['n']}: {pk['t']}", url, score=0, excl=list(pk.get("g", [])))
+                ent = run.state["digest"][dk]
+            excl = ent.get("excl", [])    # секунды, уже ушедшие с прошлым дайджестом (± 2 маркера — тот же момент)
+            ent["sub"] = [txt for sec, txt in items if all(abs(sec - x) > 2 * step for x in excl)]
+            pk["g"] = sorted(set(pk.get("g", [])) | {sec for sec, _ in items})
+            if created and not ent["sub"]:
+                del run.state["digest"][dk]   # нового нет — стрим второй раз не показываем
+        if found and found[0][1] >= lp["push_ratio"] and not pk.get("pushed"):
+            pk["pushed"] = run.ts
+            sec, ratio = found[0]
+            run.push("🎯", f"Момент на стриме {pk['n']}: «{pk['t']}» — пик {hms(sec)} ({ratio:.1f}× медианы)",
+                     "YouTube · Most replayed", f"{url}&t={sec}s")
 
 
 YT_POE_ANY_RE = re.compile(r"path\s*of\s*exile|\bpoe\s*[12²]?\b|\bpoe[12]\b|\bпое\s*2?\b", re.IGNORECASE)
@@ -1334,6 +1493,7 @@ def build_digest(run):
                 lines.append(f"• {esc(v['text'][:150])}: {esc(v['url'])}")
             elif sec == "yt_live":         # «Стрим <канал>: <название> <ссылка>» — одной строкой
                 lines.append(f"• {esc(v['text'][:150])} {esc(v['url'])}")
+                lines += [f"   ↳ {esc(s)}" for s in v.get("sub", [])[:6]]   # пики heatmap / таймкоды автора
             else:
                 lines.append(f"• <a href=\"{esc(v['url'])}\">{esc(v['text'][:150])}</a>")
             n += 1
